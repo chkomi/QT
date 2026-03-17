@@ -1,0 +1,72 @@
+exchanges:
+  upbit:
+    enabled: true
+    paper_trading: false
+    allocation: 0.5          # 전체 자산 중 이 거래소 비중 50%
+  bithumb:
+    enabled: false           # API 키 입력 후 true로 변경
+    paper_trading: true
+    allocation: 0.25
+  okx:
+    enabled: true
+    paper_trading: false
+    allocation: 0.25         # USDT 기준 운용
+
+markets:
+  - KRW-BTC
+  - KRW-ETH
+
+# BTC : ETH 비중 배분 (합계 = 1.0)
+asset_weights:
+  KRW-BTC: 0.7
+  KRW-ETH: 0.3
+
+trading:
+  initial_capital: 1000000       # 초기 투자금 (원)
+  max_position_ratio: 0.25       # 종목당 최대 비중 25% (워뇨띠: 20~30%)
+  stop_loss_pct: -0.03           # 손절 -3%
+  take_profit_pct: 0.054         # 익절 +5.4% (손익비 1.8:1 확보)
+  daily_loss_limit_pct: -0.20    # 일일 최대 손실 -20% (워뇨띠 기준)
+  min_order_amount: 5000         # 최소 주문금액 (원)
+
+strategies:
+  volatility_breakout:
+    k: 0.5                       # 변동폭 비율 (0.3 ~ 0.7)
+    interval: "day"              # 캔들 단위
+    enabled: true
+    volume_multiplier: 1.5       # 거래량 급증 기준 배수 (워뇨띠)
+    volume_lookback: 20          # 거래량 평균 기간
+    vp_lookback: 20              # Volume Profile 기간 (웅크웅크)
+    vp_bins: 50                  # 가격 구간 수
+    fib_lookback: 50             # 피보나치 스윙 탐색 기간 (웅크웅크)
+
+  moving_average:
+    short_window: 5
+    long_window: 20
+    interval: "day"
+    enabled: true
+
+  rsi:
+    period: 14
+    oversold: 30
+    overbought: 70
+    interval: "day"
+    enabled: false
+
+# OKX 선물 설정
+okx_futures:
+  use_short: true
+  leverage: 1                  # 1x = 레버리지 없음 (원금만 위험)
+  margin_mode: isolated        # isolated: 포지션별 독립 / cross: 전체 잔고 공유
+
+backtest:
+  start_date: "2022-01-01"
+  end_date: "2024-12-31"
+  commission: 0.0005             # 수수료 0.05%
+  slippage: 0.001                # 슬리피지 0.1%
+
+notification:
+  telegram:
+    enabled: false
+    token: ""
+    chat_id: ""
