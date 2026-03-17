@@ -16,6 +16,11 @@ markets:
   - KRW-BTC
   - KRW-ETH
 
+# 거래소별 거래 종목 (미지정 시 markets 전체 사용)
+exchange_markets:
+  okx:
+    - KRW-BTC   # OKX는 BTC-USDT 페어만 롱/숏
+
 # BTC : ETH 비중 배분 (합계 = 1.0)
 asset_weights:
   KRW-BTC: 0.7
@@ -81,6 +86,12 @@ scalp_trading:
   take_profit_pct: 0.020         # +2.0% 익절  (손익비 1.67:1)
   max_holding_hours: 6           # 6시간 초과 시 강제 청산
   daily_loss_limit_pct: -0.10   # 단타 일일 손실 한도 -10%
+  # 동적 레버리지 (확신도 1~5 → 1x~max_leverage)
+  max_leverage: 5                # 최대 레버리지 (확신도 5일 때 적용)
+  # 확신도 → 레버리지 매핑: 1→1x, 2→2x, 3→3x, 4→4x, 5→5x
+  # Top Trader 혼합 신호 임계값
+  top_trader_follow_threshold: 0.55   # 이 이상 → 순추종 +1
+  top_trader_extreme_threshold: 0.75  # 이 이상 → 역추종 차단 + 반대방향 +2
 
 backtest:
   start_date: "2022-01-01"

@@ -139,6 +139,34 @@ class OKXExchange(ExchangeBase):
             logger.error(f"[OKX] 포지션 조회 오류: {e}")
             return {"side": None, "volume": 0.0, "entry_price": 0.0}
 
+    def _to_inst_id(self, ccxt_futures_symbol: str) -> str:
+        """ccxt 선물 심볼 → OKX instId (BTC/USDT:USDT → BTC-USDT-SWAP)"""
+        if ":USDT" in ccxt_futures_symbol:
+            base = ccxt_futures_symbol.split("/")[0]
+            return f"{base}-USDT-SWAP"
+        return ccxt_futures_symbol.replace("/", "-")
+
+    def fetch_top_trader_ratio(self, market: str, period: str = "1H") -> float:
+        """
+        OKX Top Traders 롱 비율 조회 (0.0 ~ 1.0)
+        0.5 = 중립, > 0.5 = 롱 우위, < 0.5 = 숏 우위
+        실패 시 중립값 0.5 반환
+        """
+        inst_id = self._to_inst_id(self._futures_symbol(market))
+        try:
+            resp = self._spot.publicGetRubikStatContractsLongShortAccountRatioContractTopTrader({
+                "instId": inst_id,
+                "period": period,
+            })
+            data = resp.get("data", [])
+            if data:
+                ratio = float(data[0].get("longRatio", 0.5))
+                logger.info(f"[OKX] Top Trader 롱 비율 ({market}): {ratio:.1%}")
+                return ratio
+        except Exception as e:
+            logger.warning(f"[OKX] Top Trader 비율 조회 실패 ({market}): {e}")
+        return 0.5
+
     def fetch_ohlcv(self, market: str, interval: str = "day", count: int = 210) -> pd.DataFrame:
         """OKX ccxt로 OHLCV 수집 (USDT 기준 가격)"""
         interval_map = {
@@ -205,36 +233,96 @@ class OKXExchange(ExchangeBase):
             logger.error(f"[OKX] 현물 매도 실패: {e}")
             return None
 
+    # ── 동적 레버리지 설정 ─────────────────────────────
+
+    def set_leverage_dynamic(self, market: str, leverage: int) -> bool:
+        """포지션 진입 직전 레버리지 동적 변경"""
+        if not self._futures:
+            return False
+        try:
+            symbol = self._futures_symbol(market)
+            self._futures.set_leverage(leverage, symbol, params={"mgnMode": "isolated"})
+            logger.info(f"[OKX] {market} 레버리지 {leverage}x 설정")
+            return True
+        except Exception as e:
+            logger.warning(f"[OKX] 레버리지 동적 설정 실패 ({market} {leverage}x): {e}")
+            return False
+
+    # ── 선물 롱 진입/청산 ──────────────────────────────
+
+    def open_long_futures(self, market: str, amount_usdt: float, leverage: int = 1) -> Optional[dict]:
+        """선물 롱 진입 (시장가 매수 포지션 오픈)"""
+        if amount_usdt < 1.0:
+            logger.warning(f"[OKX] 선물 롱 최소 주문금액 미달: {amount_usdt:.2f} USDT")
+            return None
+        if self.paper_trading:
+            logger.info(f"[OKX PAPER] 선물 롱 진입 | {market} | {amount_usdt:.2f} USDT {leverage}x")
+            return {"type": "paper_long_futures_open", "market": market, "amount": amount_usdt}
+        if not self._futures:
+            logger.error("[OKX] 선물 클라이언트 미초기화")
+            return None
+        try:
+            self.set_leverage_dynamic(market, leverage)
+            symbol = self._futures_symbol(market)
+            price  = self.get_current_price(market)
+            volume = amount_usdt / price
+            result = self._futures.create_market_buy_order(
+                symbol, volume,
+                params={"tdMode": "isolated"}
+            )
+            logger.info(f"[OKX] 선물 롱 진입 | {symbol} | {amount_usdt:.2f} USDT | {leverage}x")
+            return result
+        except Exception as e:
+            logger.error(f"[OKX] 선물 롱 진입 실패: {e}")
+            return None
+
+    def close_long_futures(self, market: str, volume: float) -> Optional[dict]:
+        """선물 롱 청산 (시장가 매도 포지션 클로즈)"""
+        if self.paper_trading:
+            logger.info(f"[OKX PAPER] 선물 롱 청산 | {market} | {volume:.6f}")
+            return {"type": "paper_long_futures_close", "market": market, "volume": volume}
+        if not self._futures:
+            return None
+        try:
+            symbol = self._futures_symbol(market)
+            result = self._futures.create_market_sell_order(
+                symbol, volume,
+                params={"tdMode": "isolated", "reduceOnly": True}
+            )
+            logger.info(f"[OKX] 선물 롱 청산 | {symbol} | {volume:.6f}")
+            return result
+        except Exception as e:
+            logger.error(f"[OKX] 선물 롱 청산 실패: {e}")
+            return None
+
     # ── 선물 숏 진입/청산 ──────────────────────────────
 
-    def open_short(self, market: str, amount_usdt: float) -> Optional[dict]:
+    def open_short(self, market: str, amount_usdt: float, leverage: int = None) -> Optional[dict]:
         """
         선물 숏 진입 (시장가 매도 포지션 오픈)
 
         Parameters
         ----------
         amount_usdt : 진입 금액 (USDT 기준)
+        leverage    : 레버리지 (None이면 기본 self.leverage 사용)
         """
+        lev = leverage if leverage is not None else self.leverage
         if self.paper_trading:
-            logger.info(f"[OKX PAPER] 숏 진입 | {market} | {amount_usdt:.2f} USDT")
+            logger.info(f"[OKX PAPER] 숏 진입 | {market} | {amount_usdt:.2f} USDT {lev}x")
             return {"type": "paper_short_open", "market": market, "amount": amount_usdt}
         if not self._futures:
             logger.error("[OKX] 선물 클라이언트 미초기화")
             return None
         try:
+            self.set_leverage_dynamic(market, lev)
             symbol = self._futures_symbol(market)
             price  = self.get_current_price(market)
-            # 계약 수량 계산 (1 계약 = 0.01 BTC or 0.1 ETH 등 OKX 기준)
-            # create_market_sell_order에 USDT 금액을 넘기면 ccxt가 자동 변환
             result = self._futures.create_market_sell_order(
                 symbol,
-                amount_usdt / price,          # 코인 수량
-                params={
-                    "tdMode": "isolated",
-                    "posSide": "short",
-                }
+                amount_usdt / price,
+                params={"tdMode": "isolated"}
             )
-            logger.info(f"[OKX] 숏 진입 | {symbol} | {amount_usdt:.2f} USDT | 레버리지: {self.leverage}x")
+            logger.info(f"[OKX] 숏 진입 | {symbol} | {amount_usdt:.2f} USDT | {lev}x")
             return result
         except Exception as e:
             logger.error(f"[OKX] 숏 진입 실패: {e}")

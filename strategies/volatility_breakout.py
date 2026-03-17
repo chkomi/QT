@@ -165,6 +165,30 @@ class VolatilityBreakoutStrategy(BaseStrategy):
                 axis=1,
             )
 
+        # ── 확신도 점수 (1~5) → 동적 레버리지 기반 ────────────────────
+        # 신호가 발생한 행에만 의미 있음 (나머지는 1로 초기화)
+        confidence = pd.Series(1, index=df.index)
+
+        # +1 : 거래량이 기준배수의 2배 이상 (워뇨띠 — 강한 급등 신호)
+        avg_vol = df["volume"].rolling(self.volume_lookback).mean()
+        confidence += (df["volume"] > avg_vol * self.volume_multiplier * 2).astype(int)
+
+        # +1 : 피보나치 레벨 근접 (웅크웅크)
+        if "fib_near" in df.columns:
+            confidence += df["fib_near"].astype(int)
+
+        # +1 : EMA 단기-중기 간격이 중기 대비 1% 이상 (정렬 강도)
+        if "ema_20" in df.columns and "ema_55" in df.columns:
+            ema_gap = (df["ema_20"] - df["ema_55"]).abs() / df["ema_55"]
+            confidence += (ema_gap > 0.01).astype(int)
+
+        # +1 : MA200 대비 거리 5% 이상 (추세 강도)
+        if "ma200" in df.columns:
+            ma_dist = (df["close"] - df["ma200"]).abs() / df["ma200"]
+            confidence += (ma_dist > 0.05).astype(int)
+
+        df["confidence"] = confidence.clip(1, 5)
+
         # ── 포지션 / 수익률 ────────────────────────────────────────────
         df["position"] = df["signal"].apply(lambda s: 1 if s in (1, 2) else 0)
 
