@@ -234,19 +234,20 @@ def run_strategy():
         risk_managers[ex_name].reset_daily(equity)
         logger.info(f"[{ex_name}] 총 자산: {equity:,.2f} {ex.quote_currency}")
 
-        strat = strategy_longshort if ex_name == "okx" else strategy_long
+        strat    = strategy_longshort if ex_name == "okx" else strategy_long
+        ex_mkts  = get_markets(ex_name)
 
         # OKX: ccxt로 USDT 가격 OHLCV 수집
         if ex_name == "okx" and hasattr(ex, "fetch_ohlcv"):
             ohlcv_cache = {}
-            for market in MARKETS:
+            for market in ex_mkts:
                 df = ex.fetch_ohlcv(market, interval="day", count=210)
                 if df is not None and not df.empty:
                     ohlcv_cache[market] = df
         else:
             ohlcv_cache = upbit_ohlcv
 
-        for market in MARKETS:
+        for market in ex_mkts:
             if market not in ohlcv_cache:
                 continue
             _process(ex_name, market, ohlcv_cache[market], strat)
@@ -413,9 +414,10 @@ def run_scalp_strategy():
     rm = scalp_risk_managers[ex_name]
 
     # 1H OHLCV + 일봉 OHLCV 수집
+    ex_mkts  = get_markets(ex_name)
     ohlcv_1h = {}
     ohlcv_1d = {}
-    for market in MARKETS:
+    for market in ex_mkts:
         df_1h = ex.fetch_ohlcv(market, interval=SC_CFG.get("timeframe", "minute60"), count=210)
         if df_1h is not None and not df_1h.empty:
             ohlcv_1h[market] = df_1h
@@ -426,7 +428,7 @@ def run_scalp_strategy():
     equity = calc_total_equity(ex_name)
     rm.reset_daily(equity * _SCALP_RATIO)
 
-    for market in MARKETS:
+    for market in ex_mkts:
         if market not in ohlcv_1h or market not in ohlcv_1d:
             continue
         _process_scalp(ex_name, market, ohlcv_1h[market], ohlcv_1d[market])
@@ -587,7 +589,7 @@ def send_daily_report():
     for ex_name, ex in EXCHANGES.items():
         equity = calc_total_equity(ex_name)
         lines.append(f"\n[{ex_name}] 총 자산: {equity:,.2f} {ex.quote_currency}")
-        for market in MARKETS:
+        for market in get_markets(ex_name):
             p = ex.get_current_price(market)
             lp = long_positions[ex_name][market]
             sp = short_positions[ex_name][market]
