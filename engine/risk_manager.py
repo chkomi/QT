@@ -32,12 +32,14 @@ class RiskManager:
         stop_loss_pct: float = -0.03,
         take_profit_pct: float = 0.05,
         daily_loss_limit_pct: float = -0.10,
+        min_order_amount: float = 10_000,
     ):
         self.initial_capital = initial_capital
         self.max_position_ratio = max_position_ratio
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.daily_loss_limit_pct = daily_loss_limit_pct
+        self.min_order_amount = min_order_amount
 
         self._daily_start_capital: float = initial_capital
         self._last_reset_date: Optional[date] = None
@@ -89,9 +91,8 @@ class RiskManager:
         투자 금액 (원)
         """
         max_invest = available_cash * self.max_position_ratio
-        # 최소 주문 금액 10,000원
-        if max_invest < 10_000:
-            logger.warning("[RiskManager] 투자 가능 금액 부족 (최소 10,000원)")
+        if max_invest < self.min_order_amount:
+            logger.warning(f"[RiskManager] 투자 가능 금액 부족 (최소 {self.min_order_amount:,.0f})")
             return 0.0
         return max_invest
 

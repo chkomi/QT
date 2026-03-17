@@ -10,6 +10,7 @@ OKX 거래소 어댑터 (ccxt)
 """
 import os
 import logging
+import pandas as pd
 import ccxt
 from typing import Optional
 from .exchange_base import ExchangeBase
@@ -72,19 +73,14 @@ class OKXExchange(ExchangeBase):
         """선물 레버리지 및 마진 모드 초기 설정"""
         for market in FUTURES_MAP.values():
             try:
-                # isolated 마진 모드 설정
-                self._futures.set_margin_mode(
-                    "isolated", market,
-                    params={"posSide": "net"}
-                )
-                # 레버리지 설정
+                # isolated 마진 모드 + 레버리지 설정
                 self._futures.set_leverage(
                     self.leverage, market,
-                    params={"mgnMode": "isolated", "posSide": "net"}
+                    params={"mgnMode": "isolated"}
                 )
                 logger.info(f"[OKX] {market} | isolated {self.leverage}x 설정 완료")
             except Exception as e:
-                logger.warning(f"[OKX] 레버리지 설정 실패 ({market}): {e}")
+                logger.warning(f"[OKX] 마진/레버리지 설정 실패 ({market}): {e}")
 
     # ── 심볼 변환 ──────────────────────────────────────
 
@@ -142,6 +138,26 @@ class OKXExchange(ExchangeBase):
         except Exception as e:
             logger.error(f"[OKX] 포지션 조회 오류: {e}")
             return {"side": None, "volume": 0.0, "entry_price": 0.0}
+
+    def fetch_ohlcv(self, market: str, interval: str = "day", count: int = 210) -> pd.DataFrame:
+        """OKX ccxt로 OHLCV 수집 (USDT 기준 가격)"""
+        interval_map = {
+            "day": "1d", "week": "1w", "month": "1M",
+            "minute60": "1h", "minute240": "4h",
+            "minute30": "30m", "minute15": "15m",
+            "minute5": "5m", "minute1": "1m",
+        }
+        tf = interval_map.get(interval, "1D")
+        symbol = SPOT_MAP.get(market, market)
+        try:
+            raw = self._spot.fetch_ohlcv(symbol, tf, limit=count)
+            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df.index = pd.to_datetime(df["timestamp"], unit="ms")
+            df.index.name = "datetime"
+            return df[["open", "high", "low", "close", "volume"]]
+        except Exception as e:
+            logger.error(f"[OKX] OHLCV 수집 실패 ({market}): {e}")
+            return pd.DataFrame()
 
     def get_avg_buy_price(self, market: str) -> float:
         return 0.0

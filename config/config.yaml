@@ -59,6 +59,29 @@ okx_futures:
   leverage: 1                  # 1x = 레버리지 없음 (원금만 위험)
   margin_mode: isolated        # isolated: 포지션별 독립 / cross: 전체 잔고 공유
 
+# ── 단타 전략 (OKX 전용, 1시간봉) ───────────────────────
+# 설계 원칙:
+#   - 일봉 MA200 방향과 반드시 일치 (워뇨띠 원칙)
+#   - 롱 단타: OKX 현물 / 숏 단타: OKX 선물 (스윙 숏과 충돌 방지)
+#   - 자본은 OKX 잔고의 30% 별도 할당
+#   - 손익비 1.67:1 (TP +2.0% / SL -1.2%)
+#   - 최대 보유 6시간 (시간 손절로 무한 보유 방지)
+scalp_trading:
+  enabled: true
+  timeframe: minute60            # 1시간봉
+  capital_ratio: 0.30            # OKX 잔고의 30%를 단타 전용
+  k: 0.4                         # 돌파 민감도 (스윙 0.5보다 타이트)
+  ma_period: 50                  # 50H ≈ 2일 단기 추세
+  volume_multiplier: 2.0         # 거래량 필터 (스윙 1.5x보다 엄격)
+  volume_lookback: 20
+  vp_lookback: 20
+  vp_bins: 30
+  fib_lookback: 30
+  stop_loss_pct: -0.012          # -1.2% 손절
+  take_profit_pct: 0.020         # +2.0% 익절  (손익비 1.67:1)
+  max_holding_hours: 6           # 6시간 초과 시 강제 청산
+  daily_loss_limit_pct: -0.10   # 단타 일일 손실 한도 -10%
+
 backtest:
   start_date: "2022-01-01"
   end_date: "2024-12-31"
