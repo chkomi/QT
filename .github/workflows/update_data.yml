@@ -1,0 +1,43 @@
+name: Update Dashboard Data
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # 30분마다
+  workflow_dispatch:           # 수동 실행 가능
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Export exchange data
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSPHRASE:   ${{ secrets.OKX_PASSPHRASE }}
+        run: python scripts/export_exchange_data.py
+
+      - name: Commit and push data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/
+          git diff --cached --quiet || git commit -m "data: auto update $(date +'%Y-%m-%d %H:%M')"
+          git push
