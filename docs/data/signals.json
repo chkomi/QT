@@ -1,1 +1,1 @@
-{}
+{"upbit": {"KRW-BTC": {"signal": 0, "current_price": 109116000.0, "ma200": 137008445.0, "trend": "downtrend", "target_long": 110990000.0, "target_short": 107040000.0, "vol_surge": false, "vp_poc": 101153740.0, "vp_vah": 107099140.0, "vp_val": 97586500.0}, "KRW-ETH": {"signal": 0, "current_price": 3426000.0, "ma200": 4695795.0, "trend": "downtrend", "target_long": 3486000.0, "target_short": 3354000.0, "vol_surge": false, "vp_poc": 2967960.0, "vp_vah": 3179080.0, "vp_val": 2854280.0}}, "okx": {}}
