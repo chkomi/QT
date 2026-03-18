@@ -111,7 +111,7 @@ class DataAggregator:
             return pd.DataFrame()
 
     def _fetch_okx_ohlcv(self, market: str, interval: str = "day", count: int = 200) -> pd.DataFrame:
-        """OKX ccxt 직접 호출 (timeframe='1D' — 어댑터 'D' 버그 우회)"""
+        """OKX ccxt 직접 호출 (ccxt timeframe key 소문자 사용)"""
         try:
             import ccxt
             ex_okx = self._exchanges.get("okx")
@@ -121,12 +121,12 @@ class DataAggregator:
                 spot = ccxt.okx({"options": {"defaultType": "spot"}})
 
             tf_map = {
-                "day": "1D", "week": "1W", "month": "1M",
-                "minute60": "1H", "minute240": "4H",
+                "day": "1d", "week": "1w", "month": "1M",
+                "minute60": "1h", "minute240": "4h",
                 "minute30": "30m", "minute15": "15m",
                 "minute5": "5m", "minute1": "1m",
             }
-            tf     = tf_map.get(interval, "1D")
+            tf     = tf_map.get(interval, "1d")
             sym_map = {"KRW-BTC": "BTC/USDT", "KRW-ETH": "ETH/USDT"}
             symbol  = sym_map.get(market, market)
 

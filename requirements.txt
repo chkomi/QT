@@ -1,6 +1,6 @@
 pyupbit==0.2.33
 pybithumb
-ccxt
+ccxt==4.5.44
 pandas==2.1.4
 numpy==1.26.2
 ta==0.11.0
