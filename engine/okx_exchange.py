@@ -21,10 +21,14 @@ logger = logging.getLogger(__name__)
 SPOT_MAP = {
     "KRW-BTC": "BTC/USDT",
     "KRW-ETH": "ETH/USDT",
+    "KRW-SOL": "SOL/USDT",
+    "KRW-XRP": "XRP/USDT",
 }
 FUTURES_MAP = {
     "KRW-BTC": "BTC/USDT:USDT",
     "KRW-ETH": "ETH/USDT:USDT",
+    "KRW-SOL": "SOL/USDT:USDT",
+    "KRW-XRP": "XRP/USDT:USDT",
 }
 
 

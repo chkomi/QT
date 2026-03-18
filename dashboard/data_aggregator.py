@@ -31,6 +31,7 @@ ASSET_WEIGHTS  = _config["asset_weights"]
 EX_CFG         = _config["exchanges"]
 OKX_CFG        = _config.get("okx_futures", {})
 TRADING_CFG    = _config["trading"]
+OKX_MARKETS    = _config.get("exchange_markets", {}).get("okx", MARKETS)
 
 
 class DataAggregator:
@@ -127,8 +128,8 @@ class DataAggregator:
                 "minute5": "5m", "minute1": "1m",
             }
             tf     = tf_map.get(interval, "1d")
-            sym_map = {"KRW-BTC": "BTC/USDT", "KRW-ETH": "ETH/USDT"}
-            symbol  = sym_map.get(market, market)
+            from engine.okx_exchange import SPOT_MAP
+            symbol  = SPOT_MAP.get(market, market)
 
             raw = spot.fetch_ohlcv(symbol, tf, limit=count)
             df  = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -256,7 +257,7 @@ class DataAggregator:
                         from engine.okx_exchange import OKXExchange
                         if isinstance(ex, OKXExchange) and ex.use_short:
                             futures = {}
-                            for market in MARKETS:
+                            for market in OKX_MARKETS:
                                 try:
                                     p     = ex.get_futures_position(market)
                                     price = ex.get_current_price(market) or 0.0
@@ -334,7 +335,8 @@ class DataAggregator:
             for ex_name, ex in self._exchanges.items():
                 result[ex_name] = {}
                 strat = self._strategy_longshort if ex_name == "okx" else self._strategy_long
-                for market in MARKETS:
+                markets_to_check = OKX_MARKETS if ex_name == "okx" else MARKETS
+                for market in markets_to_check:
                     try:
                         df = self._fetch_okx_ohlcv(market, "day", 210) if ex_name == "okx" \
                              else self._fetch_upbit_ohlcv(market, "day", 210)

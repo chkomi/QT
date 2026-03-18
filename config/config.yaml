@@ -19,7 +19,10 @@ markets:
 # 거래소별 거래 종목 (미지정 시 markets 전체 사용)
 exchange_markets:
   okx:
-    - KRW-BTC   # OKX는 BTC-USDT 페어만 롱/숏
+    - KRW-BTC   # BTC/USDT:USDT 선물
+    - KRW-ETH   # ETH/USDT:USDT 선물
+    - KRW-SOL   # SOL/USDT:USDT 선물
+    - KRW-XRP   # XRP/USDT:USDT 선물
 
 # BTC : ETH 비중 배분 (합계 = 1.0)
 asset_weights:
@@ -74,7 +77,7 @@ okx_futures:
 scalp_trading:
   enabled: true
   timeframe: minute60            # 1시간봉
-  capital_ratio: 0.30            # OKX 잔고의 30%를 단타 전용
+  capital_ratio: 0.075           # OKX 잔고의 30% ÷ 4종목 = 종목당 7.5%
   k: 0.4                         # 돌파 민감도 (스윙 0.5보다 타이트)
   ma_period: 50                  # 50H ≈ 2일 단기 추세
   volume_multiplier: 2.0         # 거래량 필터 (스윙 1.5x보다 엄격)
