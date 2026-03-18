@@ -7,6 +7,8 @@ logs/
 
 # 데이터
 data/
+!docs/data/
+!docs/data/*.json
 
 # Python
 __pycache__/
