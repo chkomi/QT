@@ -165,126 +165,209 @@ function renderRisk(risk) {
   }
 }
 
-// ── 신호 행 ─────────────────────────────────────────────────────
+// ── 종목 현황 그리드 (20종목) ────────────────────────────────────
 function renderSignals(signals) {
   if (!signals) return;
-  const container = $('signal-rows');
+  const container = $('market-grid');
   if (!container) return;
   container.innerHTML = '';
 
+  // OKX 기준 모든 종목 수집 (신호 있는 것만)
+  const rows = [];
   for (const [exName, markets] of Object.entries(signals)) {
+    if (exName.toLowerCase() !== 'okx') continue;
     for (const [mkt, s] of Object.entries(markets)) {
-      const coin = mkt.split('-')[1];
-      const sl   = SIGNAL_LABEL[String(s.signal)] || SIGNAL_LABEL['0'];
-      const trend = s.trend === 'uptrend'
-        ? '<span class="badge badge-bull">▲ 상승</span>'
-        : '<span class="badge badge-bear">▼ 하락</span>';
-      const volChip = s.vol_surge
-        ? '<span class="badge badge-signal" style="font-size:9px">Vol급증</span>' : '';
+      rows.push({ exName, mkt, s });
+    }
+  }
 
-      container.insertAdjacentHTML('beforeend', `
-        <div class="signal-item">
-          <div>
-            <div><span class="signal-market">${coin}</span>
-              <span class="signal-ex" style="margin-left:4px">${exName}</span></div>
-            <div style="margin-top:3px">${trend} ${volChip}</div>
-          </div>
-          <div style="margin-left:auto;text-align:right">
-            <div><span class="badge ${sl.cls}">${sl.text}</span></div>
-            <div class="signal-vp" style="margin-top:3px">
-              POC ${fmtNum(s.vp_poc,0)}
-            </div>
-          </div>
+  // 신호 있는 종목 먼저, 그 다음 알파벳 순
+  rows.sort((a, b) => {
+    const aHas = a.s.signal !== 0 ? -1 : 0;
+    const bHas = b.s.signal !== 0 ? -1 : 0;
+    if (aHas !== bHas) return aHas - bHas;
+    return a.mkt.localeCompare(b.mkt);
+  });
+
+  const countEl = $('market-count-badge');
+  if (countEl) countEl.textContent = `${rows.length}종목`;
+
+  // 차트 탭도 갱신
+  refreshChartTabs(rows.map(r => r.mkt));
+
+  rows.forEach(({ mkt, s }) => {
+    const coin  = mkt.split('-')[1];
+    const sl    = SIGNAL_LABEL[String(s.signal)] || SIGNAL_LABEL['0'];
+    const isUp  = s.trend === 'uptrend';
+    const hasSig = s.signal !== 0;
+    const volSurge = s.vol_surge;
+
+    const trendHtml = isUp
+      ? `<span class="mini-badge trend-up">▲ 상승</span>`
+      : `<span class="mini-badge trend-dn">▼ 하락</span>`;
+    const volHtml = volSurge
+      ? `<span class="mini-badge vol-surge">⚡Vol</span>` : '';
+    const sigHtml = hasSig
+      ? `<span class="mini-badge ${sl.cls}">${sl.text}</span>` : '';
+    const ma200Html = s.ma200_gap != null
+      ? `<span class="mkt-gap ${s.ma200_gap >= 0 ? 'gap-pos' : 'gap-neg'}">MA200 ${s.ma200_gap >= 0 ? '+' : ''}${Number(s.ma200_gap).toFixed(1)}%</span>` : '';
+
+    container.insertAdjacentHTML('beforeend', `
+      <div class="market-cell ${hasSig ? 'market-cell-active' : ''}"
+           onclick="selectChartCoin('${mkt}')" style="cursor:pointer">
+        <div class="mkt-top">
+          <span class="mkt-name">${coin}</span>
+          ${trendHtml}${volHtml}
         </div>
+        <div class="mkt-bottom">
+          ${ma200Html}
+          ${sigHtml || `<span class="mini-badge badge-neutral">대기</span>`}
+        </div>
+      </div>
+    `);
+  });
+
+  // Upbit 신호도 포지션 카드 옆 별도 표시 (없으면 skip)
+  const upbitSignals = signals['upbit'];
+  if (upbitSignals) {
+    const upbitWrap = $('upbit-signal-row');
+    if (!upbitWrap) return;
+    upbitWrap.innerHTML = '';
+    for (const [mkt, s] of Object.entries(upbitSignals)) {
+      const coin = mkt.split('-')[1];
+      const sl = SIGNAL_LABEL[String(s.signal)] || SIGNAL_LABEL['0'];
+      const isUp = s.trend === 'uptrend';
+      upbitWrap.insertAdjacentHTML('beforeend', `
+        <span class="upbit-sig-item">
+          <b>${coin}</b>
+          <span class="mini-badge ${isUp ? 'trend-up' : 'trend-dn'}">${isUp ? '▲' : '▼'}</span>
+          <span class="mini-badge ${sl.cls}">${sl.text}</span>
+        </span>
       `);
     }
   }
 }
 
-// ── 포지션 카드 ─────────────────────────────────────────────────
+// 차트 탭 동적 갱신
+function refreshChartTabs(markets) {
+  const tabsEl = $('chart-tabs');
+  if (!tabsEl || tabsEl.dataset.initialized === '1') return;
+  tabsEl.dataset.initialized = '1';
+  tabsEl.innerHTML = '';
+
+  const allMarkets = markets.length > 0 ? markets
+    : ['KRW-BTC','KRW-ETH','KRW-SOL','KRW-XRP'];
+
+  allMarkets.forEach((mkt, i) => {
+    const coin = mkt.split('-')[1];
+    const btn = document.createElement('button');
+    btn.className = 'chart-tab' + (i === 0 ? ' active' : '');
+    btn.dataset.coin = mkt;
+    btn.textContent = coin;
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.chart-tab').forEach(t => t.classList.remove('active'));
+      btn.classList.add('active');
+      _state.selectedCoin = mkt;
+      refreshCharts();
+    });
+    tabsEl.appendChild(btn);
+  });
+
+  if (allMarkets.length > 0 && !allMarkets.includes(_state.selectedCoin)) {
+    _state.selectedCoin = allMarkets[0];
+  }
+}
+
+// 종목 클릭 → 차트 탭 이동
+window.selectChartCoin = function(mkt) {
+  const tab = document.querySelector(`.chart-tab[data-coin="${mkt}"]`);
+  if (tab) {
+    tab.click();
+    $('chart-tabs')?.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else {
+    _state.selectedCoin = mkt;
+    refreshCharts();
+  }
+};
+
+// ── 포지션 카드 (활성 포지션만 표시) ───────────────────────────
 function renderPositionCards(portfolio) {
   if (!portfolio) return;
   const container = $('position-cards');
   if (!container) return;
   container.innerHTML = '';
 
+  let activeCount = 0;
+
   for (const [exName, ex] of Object.entries(portfolio.exchanges || {})) {
     if (!ex.enabled) continue;
     const cur = ex.quote_currency;
 
-    // 현물 포지션
+    // 현물 포지션 — held인 것만
     for (const [mkt, pos] of Object.entries(ex.positions || {})) {
+      if (!pos.held) continue;
+      activeCount++;
       const coin     = mkt.split('-')[1];
-      const held     = pos.held;
       const pnlPct   = pos.unrealized_pnl_pct;
-      const pnlKey   = `unrealized_pnl_${cur.toLowerCase()}`;
-      const pnlQuote = pos[pnlKey] || 0;
-
-      let priceDisplay = fmtPrice(pos.current_price, cur);
-      let entryDisplay = held ? fmtPrice(pos.entry_price, cur) : '—';
-      let pnlDisplay   = held ? `<span class="${colorClass(pnlPct)}">${fmtPct(pnlPct)}</span>` : '—';
+      const priceDisplay = fmtPrice(pos.current_price, cur);
+      const entryDisplay = fmtPrice(pos.entry_price, cur);
+      const pnlDisplay   = `<span class="${colorClass(pnlPct)}">${fmtPct(pnlPct)}</span>`;
 
       container.insertAdjacentHTML('beforeend', `
-        <div class="position-card ${held ? 'active' : 'inactive'}">
+        <div class="position-card active">
           <div class="pos-header">
             <span class="pos-ex">${exName}</span>
             <span class="pos-mkt">${coin}</span>
-            <span class="pos-type">
-              ${held ? '<span class="badge badge-bull">롱</span>' : '<span class="badge badge-neutral">대기</span>'}
-            </span>
+            <span class="pos-type"><span class="badge badge-bull">롱</span></span>
           </div>
           <div class="pos-body">
-            ${held ? `
-              <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${entryDisplay}</span></div>
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${priceDisplay}</span></div>
-              <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(pos.volume).toFixed(6)}</span></div>
-              <div class="pos-row"><span class="pos-label">미실현</span><span class="pos-val">${pnlDisplay}</span></div>
-            ` : `
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${priceDisplay}</span></div>
-              <div class="pos-no-position">포지션 없음</div>
-            `}
+            <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${entryDisplay}</span></div>
+            <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${priceDisplay}</span></div>
+            <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(pos.volume).toFixed(6)}</span></div>
+            <div class="pos-row"><span class="pos-label">미실현</span><span class="pos-val">${pnlDisplay}</span></div>
           </div>
         </div>
       `);
     }
 
-    // OKX 선물 포지션
+    // OKX 선물 포지션 — held인 것만
     for (const [mkt, fut] of Object.entries(ex.futures || {})) {
-      const coin  = mkt.split('-')[1];
-      const side  = fut.side;
-      const held  = side !== null && fut.volume > 0;
+      const side = fut.side;
+      const held = side !== null && fut.volume > 0;
+      if (!held) continue;
+      activeCount++;
+      const coin   = mkt.split('-')[1];
       const pnlPct = fut.unrealized_pnl_pct;
+      const cardCls = side === 'short' ? 'active-short' : 'active';
+      const sideBadge = side === 'short'
+        ? '<span class="badge badge-bear">숏</span>'
+        : '<span class="badge badge-bull">롱</span>';
 
       container.insertAdjacentHTML('beforeend', `
-        <div class="position-card ${held && side==='short' ? 'active-short' : held ? 'active' : 'inactive'}">
+        <div class="position-card ${cardCls}">
           <div class="pos-header">
             <span class="pos-ex">${exName} 선물</span>
             <span class="pos-mkt">${coin}</span>
-            <span class="pos-type">
-              ${held && side==='short' ? '<span class="badge badge-bear">숏</span>'
-              : held && side==='long'  ? '<span class="badge badge-bull">롱</span>'
-              : '<span class="badge badge-neutral">대기</span>'}
-            </span>
+            <span class="pos-type">${sideBadge}</span>
           </div>
           <div class="pos-body">
-            ${held ? `
-              <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${fmtNum(fut.entry_price,2)}</span></div>
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtNum(fut.current_price,2)}</span></div>
-              <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(fut.volume).toFixed(4)}</span></div>
-              <div class="pos-row"><span class="pos-label">미실현</span>
-                <span class="pos-val ${colorClass(pnlPct)}">${fmtPct(pnlPct)}</span></div>
-            ` : `
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtNum(fut.current_price,2)}</span></div>
-              <div class="pos-no-position">포지션 없음</div>
-            `}
+            <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${fmtNum(fut.entry_price,2)}</span></div>
+            <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtNum(fut.current_price,2)}</span></div>
+            <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(fut.volume).toFixed(4)}</span></div>
+            <div class="pos-row"><span class="pos-label">미실현</span>
+              <span class="pos-val ${colorClass(pnlPct)}">${fmtPct(pnlPct)}</span></div>
           </div>
         </div>
       `);
     }
   }
+
+  if (activeCount === 0) {
+    container.innerHTML = '<div class="pos-empty-state">현재 보유 포지션이 없습니다</div>';
+  }
 }
 
-// ── 차트 탭 ─────────────────────────────────────────────────────
+// ── 차트 탭 초기화 (정적 탭 → 이벤트 연결만) ───────────────────
 function initChartTabs() {
   document.querySelectorAll('.chart-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -296,18 +379,33 @@ function initChartTabs() {
   });
 }
 
+// Upbit은 BTC/ETH만 지원 (KRW 현물)
+const UPBIT_MARKETS = ['KRW-BTC', 'KRW-ETH'];
+
 async function refreshCharts() {
   const coin     = _state.selectedCoin;
   const trades   = _state.trades;
+  const upbitSupported = UPBIT_MARKETS.includes(coin);
+
+  // Upbit 차트: SOL/XRP는 숨기고 OKX만 전체 너비로
+  const upbitPanel = $('chart-upbit');
+  const chartGrid  = upbitPanel?.closest('.chart-grid');
+  if (upbitPanel) {
+    upbitPanel.style.display = upbitSupported ? '' : 'none';
+  }
+  if (chartGrid) {
+    chartGrid.style.gridTemplateColumns = upbitSupported ? '' : '1fr';
+  }
 
   // Upbit 차트
-  try {
-    $('chart-upbit')?.classList.remove('hidden');
-    const upbitData = await api.candles('upbit', coin);
-    updateChart('chart-upbit-body', `upbit_${coin}`, upbitData,
-      trades.filter(t => t.exchange === 'upbit' && t.market === coin), false);
-    updateChartHeader('chart-upbit', 'upbit', coin, upbitData, 'KRW');
-  } catch (e) { console.error('Upbit 차트 오류:', e); }
+  if (upbitSupported) {
+    try {
+      const upbitData = await api.candles('upbit', coin);
+      updateChart('chart-upbit-body', `upbit_${coin}`, upbitData,
+        trades.filter(t => t.exchange === 'upbit' && t.market === coin), false);
+      updateChartHeader('chart-upbit', 'upbit', coin, upbitData, 'KRW');
+    } catch (e) { console.error('Upbit 차트 오류:', e); }
+  }
 
   // OKX 선물 차트
   try {

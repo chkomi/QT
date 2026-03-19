@@ -359,25 +359,125 @@ button { cursor: pointer; font-family: inherit; }
   text-align: center;
   padding: 8px 0;
 }
+.pos-empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 20px 0;
+}
+
+/* ── 종목 현황 그리드 ────────────────────────────────────────── */
+.market-count-badge {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 6px;
+}
+
+.market-cell {
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.market-cell:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border);
+}
+.market-cell-active {
+  border-color: var(--accent) !important;
+  background: var(--accent-dim);
+}
+
+.mkt-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+.mkt-name {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 32px;
+}
+.mkt-bottom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.mkt-gap {
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.mkt-gap.gap-pos { color: var(--green); }
+.mkt-gap.gap-neg { color: var(--red); }
+
+/* mini badges */
+.mini-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.trend-up  { background: var(--green-dim);   color: var(--green); }
+.trend-dn  { background: var(--red-dim);     color: var(--red); }
+.vol-surge { background: var(--orange-dim);  color: var(--orange); }
+
+/* upbit inline signals */
+.upbit-sig-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+  font-size: 11px;
+}
 
 /* ── 차트 영역 ──────────────────────────────────────────────── */
 .charts-section {}
 
+.chart-tabs-wrap {
+  flex: 1;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  margin-bottom: 0;
+}
+.chart-tabs-wrap::-webkit-scrollbar { height: 4px; }
+.chart-tabs-wrap::-webkit-scrollbar-track { background: transparent; }
+.chart-tabs-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
 .chart-tabs {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 5px;
+  padding-bottom: 4px;
+  width: max-content;
 }
 .chart-tab {
-  padding: 5px 14px;
+  padding: 4px 11px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
+  white-space: nowrap;
 }
 .chart-tab.active {
   background: var(--accent-dim);

@@ -42,10 +42,8 @@
       <div id="exchange-rows" style="margin-top:12px"></div>
     </div>
 
-    <!-- 리스크 + 신호 패널 -->
+    <!-- 리스크 패널 -->
     <div class="right-panel">
-
-      <!-- 리스크 상태 -->
       <div class="card risk-card">
         <div class="card-title">리스크 상태</div>
         <div class="risk-rows" id="risk-rows">
@@ -53,18 +51,26 @@
           <div class="skeleton" style="height:56px"></div>
         </div>
       </div>
+    </div>
+  </div>
 
-      <!-- 전략 신호 -->
-      <div class="card signal-card">
-        <div class="card-title">전략 신호</div>
-        <div class="signal-rows" id="signal-rows">
-          <div class="skeleton" style="height:54px;width:160px"></div>
-          <div class="skeleton" style="height:54px;width:160px"></div>
-          <div class="skeleton" style="height:54px;width:160px"></div>
-          <div class="skeleton" style="height:54px;width:160px"></div>
-        </div>
-      </div>
-
+  <!-- 종목 현황 (20종목 그리드) -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span class="card-title" style="margin-bottom:0">종목 현황</span>
+      <span class="market-count-badge" id="market-count-badge"></span>
+      <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">OKX 선물 기준</span>
+    </div>
+    <div class="market-grid" id="market-grid">
+      <!-- JS로 동적 렌더링 -->
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
+      <div class="skeleton" style="height:52px"></div>
     </div>
   </div>
 
@@ -81,11 +87,16 @@
 
   <!-- 차트 섹션 -->
   <div class="card charts-section">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <span class="card-title" style="margin-bottom:0">캔들 차트</span>
-      <div class="chart-tabs">
-        <button class="chart-tab active" data-coin="KRW-BTC">BTC</button>
-        <button class="chart-tab" data-coin="KRW-ETH">ETH</button>
+      <div class="chart-tabs-wrap">
+        <div class="chart-tabs" id="chart-tabs">
+          <!-- JS로 동적 생성 -->
+          <button class="chart-tab active" data-coin="KRW-BTC">BTC</button>
+          <button class="chart-tab" data-coin="KRW-ETH">ETH</button>
+          <button class="chart-tab" data-coin="KRW-SOL">SOL</button>
+          <button class="chart-tab" data-coin="KRW-XRP">XRP</button>
+        </div>
       </div>
     </div>
 
@@ -207,6 +218,24 @@
           <option value="">전체 종목</option>
           <option value="KRW-BTC">BTC</option>
           <option value="KRW-ETH">ETH</option>
+          <option value="KRW-BNB">BNB</option>
+          <option value="KRW-SOL">SOL</option>
+          <option value="KRW-XRP">XRP</option>
+          <option value="KRW-DOGE">DOGE</option>
+          <option value="KRW-ADA">ADA</option>
+          <option value="KRW-AVAX">AVAX</option>
+          <option value="KRW-LINK">LINK</option>
+          <option value="KRW-DOT">DOT</option>
+          <option value="KRW-TON">TON</option>
+          <option value="KRW-MATIC">MATIC</option>
+          <option value="KRW-UNI">UNI</option>
+          <option value="KRW-LTC">LTC</option>
+          <option value="KRW-BCH">BCH</option>
+          <option value="KRW-APT">APT</option>
+          <option value="KRW-NEAR">NEAR</option>
+          <option value="KRW-OP">OP</option>
+          <option value="KRW-ARB">ARB</option>
+          <option value="KRW-SUI">SUI</option>
         </select>
       </div>
     </div>
