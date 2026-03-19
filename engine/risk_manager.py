@@ -104,13 +104,37 @@ class RiskManager:
         """익절 가격"""
         return entry_price * (1 + self.take_profit_pct)
 
-    def should_stop_loss(self, entry_price: float, current_price: float) -> bool:
-        """현재가가 손절 가격 이하인지 확인"""
-        return current_price <= self.calc_stop_loss_price(entry_price)
+    def should_stop_loss(
+        self,
+        entry_price: float,
+        current_price: float,
+        stop_price: Optional[float] = None,
+    ) -> bool:
+        """
+        현재가가 손절 가격 이하인지 확인.
 
-    def should_take_profit(self, entry_price: float, current_price: float) -> bool:
-        """현재가가 익절 가격 이상인지 확인"""
-        return current_price >= self.calc_take_profit_price(entry_price)
+        Parameters
+        ----------
+        stop_price : 절대 손절 가격 (ATR 기반 동적 SL). None이면 비율 기준 사용.
+        """
+        threshold = stop_price if stop_price is not None else self.calc_stop_loss_price(entry_price)
+        return current_price <= threshold
+
+    def should_take_profit(
+        self,
+        entry_price: float,
+        current_price: float,
+        take_price: Optional[float] = None,
+    ) -> bool:
+        """
+        현재가가 익절 가격 이상인지 확인.
+
+        Parameters
+        ----------
+        take_price : 절대 익절 가격 (ATR 기반 동적 TP). None이면 비율 기준 사용.
+        """
+        threshold = take_price if take_price is not None else self.calc_take_profit_price(entry_price)
+        return current_price >= threshold
 
     def is_trading_allowed(self, current_capital: float) -> bool:
         """거래 허용 여부 종합 판단"""

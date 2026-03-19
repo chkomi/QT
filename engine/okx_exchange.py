@@ -1,34 +1,31 @@
 """
 OKX 거래소 어댑터 (ccxt)
 
-현물(Spot)   : 롱 전용  — BTC/USDT, ETH/USDT
-선물(Futures): 롱 + 숏  — BTC/USDT:USDT, ETH/USDT:USDT (무기한 스왑)
+현물(Spot)   : 롱 전용  — {COIN}/USDT 자동 생성
+선물(Futures): 롱 + 숏  — {COIN}/USDT:USDT 자동 생성 (무기한 스왑)
 
 포지션 모드: 단방향 (one-way) — long/short 동시 보유 없음
 레버리지   : 기본 1x (config에서 조정 가능)
 마진 모드  : isolated (포지션별 독립 마진)
+심볼 변환  : KRW-BTC → BTC/USDT (spot) / BTC/USDT:USDT (futures) 자동 생성
+             비표준 심볼은 _SPOT_OVERRIDE / _FUTURES_OVERRIDE 에 등록
 """
 import os
 import logging
 import pandas as pd
 import ccxt
-from typing import Optional
+from typing import Optional, List
 from .exchange_base import ExchangeBase
 
 logger = logging.getLogger(__name__)
 
-# 업비트 마켓명 → OKX 심볼 변환
-SPOT_MAP = {
-    "KRW-BTC": "BTC/USDT",
-    "KRW-ETH": "ETH/USDT",
-    "KRW-SOL": "SOL/USDT",
-    "KRW-XRP": "XRP/USDT",
+# 비표준 심볼 오버라이드 (표준 패턴과 다른 경우만 등록)
+# MATIC → OKX에서 POL로 리브랜딩
+_SPOT_OVERRIDE: dict = {
+    "KRW-MATIC": "POL/USDT",
 }
-FUTURES_MAP = {
-    "KRW-BTC": "BTC/USDT:USDT",
-    "KRW-ETH": "ETH/USDT:USDT",
-    "KRW-SOL": "SOL/USDT:USDT",
-    "KRW-XRP": "XRP/USDT:USDT",
+_FUTURES_OVERRIDE: dict = {
+    "KRW-MATIC": "POL/USDT:USDT",
 }
 
 
@@ -39,6 +36,7 @@ class OKXExchange(ExchangeBase):
     paper_trading : True이면 실제 주문 없이 로그만 출력
     leverage      : 선물 레버리지 (기본 1)
     use_short     : 숏 전략 사용 여부 (True이면 선물 마켓 사용)
+    markets       : 선물 레버리지 초기 설정할 마켓 리스트 (예: ["KRW-BTC", "KRW-ETH", ...])
     """
 
     def __init__(
@@ -46,10 +44,12 @@ class OKXExchange(ExchangeBase):
         paper_trading: bool = True,
         leverage: int = 1,
         use_short: bool = True,
+        markets: Optional[List[str]] = None,
     ):
         super().__init__("okx", paper_trading, quote_currency="USDT")
         self.leverage = leverage
         self.use_short = use_short
+        self._markets = markets or []
         self._spot = None
         self._futures = None
 
@@ -65,46 +65,67 @@ class OKXExchange(ExchangeBase):
 
             self._spot = ccxt.okx({**base_cfg, "options": {"defaultType": "spot"}})
             if use_short:
-                self._futures = ccxt.okx({**base_cfg, "options": {"defaultType": "swap"}})
+                self._futures = ccxt.okx({**base_cfg, "options": {
+                    "defaultType": "swap",
+                    "posMode": "net",          # 단방향(one-way) 모드 명시
+                }})
                 self._init_futures_settings()
-            logger.info(f"[OKX] 실전 모드 | 레버리지: {leverage}x | 숏: {use_short}")
+            logger.info(f"[OKX] 실전 모드 | 레버리지: {leverage}x | 숏: {use_short} | 종목: {len(self._markets)}개")
         else:
             # 페이퍼 모드에서도 공개 API(현재가)는 사용
             self._spot = ccxt.okx({"options": {"defaultType": "spot"}})
-            logger.info("[OKX] 페이퍼 트레이딩 모드")
+            logger.info(f"[OKX] 페이퍼 트레이딩 모드 | 종목: {len(self._markets)}개")
 
     def _init_futures_settings(self):
-        """선물 레버리지 및 마진 모드 초기 설정"""
-        for market in FUTURES_MAP.values():
-            try:
-                # isolated 마진 모드 + 레버리지 설정
-                self._futures.set_leverage(
-                    self.leverage, market,
-                    params={"mgnMode": "isolated"}
-                )
-                logger.info(f"[OKX] {market} | isolated {self.leverage}x 설정 완료")
-            except Exception as e:
-                logger.warning(f"[OKX] 마진/레버리지 설정 실패 ({market}): {e}")
+        """선물 레버리지 및 마진 모드 초기 설정 (등록된 모든 마켓 × long/short)"""
+        for market in self._markets:
+            symbol = self._futures_symbol(market)
+            for pos_side in ["long", "short"]:
+                try:
+                    self._futures.set_leverage(
+                        self.leverage, symbol,
+                        params={"mgnMode": "isolated", "posSide": pos_side}
+                    )
+                    logger.info(f"[OKX] {symbol} {pos_side} | isolated {self.leverage}x 설정 완료")
+                except Exception as e:
+                    logger.warning(f"[OKX] 레버리지 설정 실패 ({symbol} {pos_side}): {e}")
 
-    # ── 심볼 변환 ──────────────────────────────────────
+    # ── 심볼 변환 (KRW-BTC → BTC/USDT 자동 생성) ──────
 
     def _spot_symbol(self, market: str) -> str:
-        return SPOT_MAP.get(market, market)
+        if market in _SPOT_OVERRIDE:
+            return _SPOT_OVERRIDE[market]
+        coin = market.replace("KRW-", "")
+        return f"{coin}/USDT"
 
     def _futures_symbol(self, market: str) -> str:
-        return FUTURES_MAP.get(market, market)
+        if market in _FUTURES_OVERRIDE:
+            return _FUTURES_OVERRIDE[market]
+        coin = market.replace("KRW-", "")
+        return f"{coin}/USDT:USDT"
 
     # ── 잔고 조회 ──────────────────────────────────────
 
     def get_balance_quote(self) -> float:
+        """
+        OKX 총 USDT 자산 = spot total + futures total (마진 + 미실현손익 포함)
+        spot.free만 쓰면 선물 계좌에 이체된 증거금이 누락됨.
+        """
         if self.paper_trading:
             return 0.0
+        total = 0.0
         try:
-            bal = self._spot.fetch_balance()
-            return float(bal.get("USDT", {}).get("free", 0) or 0)
+            spot_bal = self._spot.fetch_balance()
+            total += float(spot_bal.get("USDT", {}).get("total", 0) or 0)
         except Exception as e:
-            logger.error(f"[OKX] USDT 잔고 오류: {e}")
-            return 0.0
+            logger.error(f"[OKX] Spot USDT 잔고 오류: {e}")
+        if self._futures:
+            try:
+                fut_bal = self._futures.fetch_balance()
+                total += float(fut_bal.get("USDT", {}).get("total", 0) or 0)
+            except Exception as e:
+                logger.error(f"[OKX] Futures USDT 잔고 오류: {e}")
+        return total
 
     def get_balance_coin(self, market: str) -> float:
         if self.paper_trading:
@@ -239,17 +260,18 @@ class OKXExchange(ExchangeBase):
 
     # ── 동적 레버리지 설정 ─────────────────────────────
 
-    def set_leverage_dynamic(self, market: str, leverage: int) -> bool:
-        """포지션 진입 직전 레버리지 동적 변경"""
+    def set_leverage_dynamic(self, market: str, leverage: int, pos_side: str = "long") -> bool:
+        """포지션 진입 직전 레버리지 동적 변경 (hedge mode: pos_side 명시)"""
         if not self._futures:
             return False
         try:
             symbol = self._futures_symbol(market)
-            self._futures.set_leverage(leverage, symbol, params={"mgnMode": "isolated"})
-            logger.info(f"[OKX] {market} 레버리지 {leverage}x 설정")
+            self._futures.set_leverage(leverage, symbol,
+                params={"mgnMode": "isolated", "posSide": pos_side})
+            logger.info(f"[OKX] {market} {pos_side} 레버리지 {leverage}x 설정")
             return True
         except Exception as e:
-            logger.warning(f"[OKX] 레버리지 동적 설정 실패 ({market} {leverage}x): {e}")
+            logger.warning(f"[OKX] 레버리지 동적 설정 실패 ({market} {leverage}x {pos_side}): {e}")
             return False
 
     # ── 선물 롱 진입/청산 ──────────────────────────────
@@ -266,13 +288,13 @@ class OKXExchange(ExchangeBase):
             logger.error("[OKX] 선물 클라이언트 미초기화")
             return None
         try:
-            self.set_leverage_dynamic(market, leverage)
+            self.set_leverage_dynamic(market, leverage, pos_side="long")
             symbol = self._futures_symbol(market)
             price  = self.get_current_price(market)
             volume = amount_usdt / price
             result = self._futures.create_market_buy_order(
                 symbol, volume,
-                params={"tdMode": "isolated"}
+                params={"tdMode": "isolated", "posSide": "long"}
             )
             logger.info(f"[OKX] 선물 롱 진입 | {symbol} | {amount_usdt:.2f} USDT | {leverage}x")
             return result
@@ -291,7 +313,7 @@ class OKXExchange(ExchangeBase):
             symbol = self._futures_symbol(market)
             result = self._futures.create_market_sell_order(
                 symbol, volume,
-                params={"tdMode": "isolated", "reduceOnly": True}
+                params={"tdMode": "isolated", "posSide": "long", "reduceOnly": True}
             )
             logger.info(f"[OKX] 선물 롱 청산 | {symbol} | {volume:.6f}")
             return result
@@ -318,13 +340,13 @@ class OKXExchange(ExchangeBase):
             logger.error("[OKX] 선물 클라이언트 미초기화")
             return None
         try:
-            self.set_leverage_dynamic(market, lev)
+            self.set_leverage_dynamic(market, lev, pos_side="short")
             symbol = self._futures_symbol(market)
             price  = self.get_current_price(market)
             result = self._futures.create_market_sell_order(
                 symbol,
                 amount_usdt / price,
-                params={"tdMode": "isolated"}
+                params={"tdMode": "isolated", "posSide": "short"}
             )
             logger.info(f"[OKX] 숏 진입 | {symbol} | {amount_usdt:.2f} USDT | {lev}x")
             return result
@@ -350,10 +372,7 @@ class OKXExchange(ExchangeBase):
             result = self._futures.create_market_buy_order(
                 symbol,
                 volume,
-                params={
-                    "tdMode": "isolated",
-                    "posSide": "short",
-                }
+                params={"tdMode": "isolated", "posSide": "short", "reduceOnly": True}
             )
             logger.info(f"[OKX] 숏 청산 | {symbol} | {volume:.6f}")
             return result

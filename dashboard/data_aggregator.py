@@ -217,7 +217,8 @@ class DataAggregator:
                     equity    = quote_bal
                     positions = {}
 
-                    for market in MARKETS:
+                    spot_markets = OKX_MARKETS if ex_name == "okx" else MARKETS
+                    for market in spot_markets:
                         try:
                             vol   = ex.get_balance_coin(market)
                             avg   = ex.get_avg_buy_price(market) if vol > 0 else 0.0

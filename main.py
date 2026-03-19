@@ -30,6 +30,8 @@ from engine.bithumb_exchange import BithumbExchange
 from engine.okx_exchange import OKXExchange
 from engine.risk_manager import RiskManager
 from monitor.telegram_bot import TelegramNotifier
+from macro.indicators import calc_macro_signal
+from macro.fetchers import fetch_fear_greed, fetch_btc_dominance, fetch_market_caps
 
 # ── 로그 설정 ──────────────────────────────────────────
 LOG_FILE = ROOT / "logs" / "trades.log"
@@ -49,15 +51,77 @@ with open(ROOT / "config" / "config.yaml", encoding="utf-8") as f:
     config = yaml.safe_load(f)
 
 MARKETS       = config["markets"]
-ASSET_WEIGHTS = config["asset_weights"]
+ASSET_WEIGHTS = config.get("asset_weights", {})   # 동적 갱신 — 초기 빈 dict
 EX_CFG        = config["exchanges"]
 OKX_CFG       = config.get("okx_futures", {})
 SC_CFG        = config.get("scalp_trading", {})
 _EX_MARKETS   = config.get("exchange_markets", {})  # 거래소별 종목 오버라이드
+_MACRO_CFG    = config.get("macro_factors", {})
+_MACRO_ENABLED   = _MACRO_CFG.get("enabled", False)
+_FINNHUB_TOKEN   = _MACRO_CFG.get("finnhub_token", "")
+_AV_KEY          = _MACRO_CFG.get("alpha_vantage_key", "")
+_CGECKO_IDS      = _MACRO_CFG.get("coingecko_ids", {})  # ticker → CoinGecko ID
+_SCALP_TOTAL_RATIO = SC_CFG.get("total_capital_ratio", SC_CFG.get("capital_ratio", 0.075) * 4)
+
+# 시가총액 가중치 상한 (BTC 최대 30%, ETH 최대 20%, 알트 각 8%)
+_WEIGHT_CAP = {
+    "BTC": OKX_CFG.get("weight_cap_btc", 0.30),
+    "ETH": OKX_CFG.get("weight_cap_eth", 0.20),
+    "_alt": OKX_CFG.get("weight_cap_alt", 0.08),
+}
 
 def get_markets(ex_name: str) -> list:
     """거래소별 거래 종목 반환 (오버라이드 없으면 전체 MARKETS)"""
     return _EX_MARKETS.get(ex_name, MARKETS)
+
+def refresh_asset_weights():
+    """CoinGecko 시가총액 기반 ASSET_WEIGHTS 동적 갱신 (매시 run_strategy 시작 시 호출)."""
+    global ASSET_WEIGHTS
+    okx_markets = get_markets("okx")
+    coins = [m.replace("KRW-", "") for m in okx_markets]
+    ids   = [_CGECKO_IDS.get(c, c.lower()) for c in coins]
+
+    caps = fetch_market_caps(ids)
+    if not caps:
+        if not ASSET_WEIGHTS:
+            n = len(okx_markets)
+            ASSET_WEIGHTS = {m: round(1.0 / n, 4) for m in okx_markets}
+            logger.info(f"[자본배분] CoinGecko 실패 → 동일 비중 {1/n:.1%} 적용")
+        return
+
+    total = sum(caps.get(c, 0) for c in coins)
+    if total == 0:
+        return
+
+    # 1차: 시가총액 비율 계산
+    weights = {}
+    for market in okx_markets:
+        coin = market.replace("KRW-", "")
+        weights[market] = caps.get(coin, 0) / total
+
+    # 반복적 상한 적용: 정규화 → 캡 → 정규화 반복 (수렴 보장)
+    for _ in range(20):
+        total_w = sum(weights.values())
+        if total_w == 0:
+            break
+        weights = {m: v / total_w for m, v in weights.items()}  # 정규화
+        violated = False
+        for market in list(weights.keys()):
+            coin = market.replace("KRW-", "")
+            cap = _WEIGHT_CAP.get(coin, _WEIGHT_CAP["_alt"])
+            if weights[market] > cap:
+                weights[market] = cap
+                violated = True
+        if not violated:
+            break
+
+    # 최종 정규화 (부동소수점 오차 보정)
+    total2 = sum(weights.values())
+    ASSET_WEIGHTS = {m: round(v / total2, 4) for m, v in weights.items()}
+
+    top5 = sorted(ASSET_WEIGHTS.items(), key=lambda x: -x[1])[:5]
+    logger.info("[자본배분] ASSET_WEIGHTS 갱신: " +
+                ", ".join(f"{m.replace('KRW-','')}:{v:.1%}" for m, v in top5) + " ...")
 
 # ── 거래소 초기화 ──────────────────────────────────────
 EXCHANGES = {}
@@ -74,6 +138,7 @@ if EX_CFG["okx"]["enabled"]:
         paper_trading=EX_CFG["okx"]["paper_trading"],
         leverage=OKX_CFG.get("leverage", 1),
         use_short=OKX_CFG.get("use_short", True),
+        markets=_EX_MARKETS.get("okx", MARKETS),   # 20종목 레버리지 초기 설정
     )
 
 if not EXCHANGES:
@@ -90,7 +155,7 @@ strategy_long = VolatilityBreakoutStrategy(
     vp_bins=_vb.get("vp_bins", 50),
     fib_lookback=_vb.get("fib_lookback", 50),
 )
-# OKX: 롱 + 숏
+# OKX: 롱 + 숏 (Supertrend/ATR SL/TP 등 신규 지표 포함)
 strategy_longshort = VolatilityBreakoutStrategy(
     k=_vb["k"], ma_period=200, use_short=True,
     volume_lookback=_vb.get("volume_lookback", 20),
@@ -98,10 +163,21 @@ strategy_longshort = VolatilityBreakoutStrategy(
     vp_lookback=_vb.get("vp_lookback", 20),
     vp_bins=_vb.get("vp_bins", 50),
     fib_lookback=_vb.get("fib_lookback", 50),
+    short_consec=_vb.get("short_consec", 2),
+    use_supertrend=_vb.get("use_supertrend", False),
+    supertrend_period=_vb.get("supertrend_period", 7),
+    supertrend_mult=_vb.get("supertrend_multiplier", 3.0),
+    use_macd_filter=_vb.get("use_macd_filter", False),
+    use_atr_sl=_vb.get("use_atr_sl", False),
+    atr_period=_vb.get("atr_period", 14),
+    atr_sl_mult=_vb.get("atr_sl_multiplier", 1.5),
+    atr_tp_mult=_vb.get("atr_tp_multiplier", 3.0),
+    use_rsi_div=_vb.get("use_rsi_divergence", False),
+    use_bb_squeeze=_vb.get("use_bb_squeeze", False),
 )
 # OKX 단타: 1시간봉 기반, 타이트한 파라미터
 strategy_scalp = VolatilityBreakoutStrategy(
-    k=SC_CFG.get("k", 0.4),
+    k=SC_CFG.get("k", 0.35),
     ma_period=SC_CFG.get("ma_period", 50),
     use_short=True,
     volume_lookback=SC_CFG.get("volume_lookback", 20),
@@ -109,6 +185,7 @@ strategy_scalp = VolatilityBreakoutStrategy(
     vp_lookback=SC_CFG.get("vp_lookback", 20),
     vp_bins=SC_CFG.get("vp_bins", 30),
     fib_lookback=SC_CFG.get("fib_lookback", 30),
+    short_consec=SC_CFG.get("short_consec", 3),
 )
 
 notifier = TelegramNotifier()
@@ -125,7 +202,7 @@ scalp_short_positions= {}
 risk_managers        = {}
 scalp_risk_managers  = {}
 
-_SCALP_RATIO = SC_CFG.get("capital_ratio", 0.30)
+_SCALP_RATIO = _SCALP_TOTAL_RATIO  # 전체 단타 자본 비중 (기본 30%)
 
 for ex_name, ex in EXCHANGES.items():
     initial_bal = ex.get_balance_quote()
@@ -140,10 +217,14 @@ for ex_name, ex in EXCHANGES.items():
         min_order_amount=min_ord,
     )
     ex_mkts = get_markets(ex_name)
-    long_positions[ex_name]  = {m: {"held": False, "entry_price": 0.0, "volume": 0.0}
-                                 for m in ex_mkts}
-    short_positions[ex_name] = {m: {"held": False, "entry_price": 0.0, "volume": 0.0}
-                                 for m in ex_mkts}
+    long_positions[ex_name]  = {
+        m: {"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None}
+        for m in ex_mkts
+    }
+    short_positions[ex_name] = {
+        m: {"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None}
+        for m in ex_mkts
+    }
 
     # 단타는 OKX만
     if ex_name == "okx" and SC_CFG.get("enabled", False):
@@ -187,9 +268,9 @@ def sync_positions(ex_name: str):
     ex = EXCHANGES[ex_name]
 
     if ex_name == "okx":
-        # OKX: 선물 롱/숏 모두 선물 포지션에서 동기화
+        # OKX: 선물 롱/숏 모두 선물 포지션에서 동기화 (전체 OKX 종목 대상)
         if isinstance(ex, OKXExchange):
-            for market in MARKETS:
+            for market in get_markets(ex_name):
                 p = ex.get_futures_position(market)
                 if p["side"] == "long" and p["volume"] > 0:
                     long_positions[ex_name][market].update(
@@ -202,7 +283,7 @@ def sync_positions(ex_name: str):
                     )
                     logger.info(f"[{ex_name}] 선물숏 동기화 | {market} {p['volume']:.6f}개 @ {p['entry_price']:,.2f}")
     else:
-        # 업비트/빗썸: 현물 롱 동기화
+        # 업비트/빗썸: 현물 롱 동기화 (KRW 마켓만)
         for market in MARKETS:
             vol = ex.get_balance_coin(market)
             if vol > 0.000001:
@@ -221,6 +302,7 @@ def run_strategy():
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     logger.info(f"{'='*55}")
     logger.info(f"전략 실행 | {now}")
+    refresh_asset_weights()   # 매시 정각 시가총액 기반 자본배분 갱신
 
     # 거래소별 OHLCV 수집 (OKX는 USDT 기준, 나머지는 KRW 업비트 기준)
     upbit_ohlcv = {}
@@ -253,6 +335,19 @@ def run_strategy():
             _process(ex_name, market, ohlcv_cache[market], strat)
 
 
+def _check_volume_exit_warning(df) -> bool:
+    """
+    EmperorBTC Volume Exit: 진입 후 거래량이 14봉 평균 대비 30% 이하로 지속되면
+    청산 대기 경고 신호. 자동 청산 아님 — 로그 경고만 발생.
+    """
+    try:
+        avg_vol = df["volume"].rolling(14).mean().iloc[-1]
+        recent_avg = df["volume"].tail(3).mean()
+        return recent_avg < avg_vol * 0.7
+    except Exception:
+        return False
+
+
 def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
     ex  = EXCHANGES[ex_name]
     rm  = risk_managers[ex_name]
@@ -272,30 +367,31 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
     if lp["held"] and lp["entry_price"] > 0:
         _close_long = (ex.close_long_futures if ex_name == "okx" and isinstance(ex, OKXExchange)
                        else ex.sell_market_order)
-        if rm.should_stop_loss(lp["entry_price"], price):
+        # ATR SL/TP가 저장되어 있으면 절대가격 기준, 없으면 비율 기준
+        if rm.should_stop_loss(lp["entry_price"], price, stop_price=lp.get("atr_sl")):
             if _close_long(market, lp["volume"]):
                 notifier.notify_stop_loss(f"{ex_name}/{market}", lp["entry_price"], price)
-                lp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
+                lp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
                 logger.warning(f"[{ex_name}][{market}] 롱 손절")
             return
-        if rm.should_take_profit(lp["entry_price"], price):
+        if rm.should_take_profit(lp["entry_price"], price, take_price=lp.get("atr_tp")):
             if _close_long(market, lp["volume"]):
                 notifier.notify_take_profit(f"{ex_name}/{market}", lp["entry_price"], price)
-                lp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
+                lp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
                 logger.info(f"[{ex_name}][{market}] 롱 익절")
             return
 
     # ── 숏 손절/익절 (OKX 전용) ───────────────────────
     if ex_name == "okx" and sp["held"] and sp["entry_price"] > 0:
-        # 숏은 가격이 올라가면 손실 → 손절 반대 방향
-        short_stop   = sp["entry_price"] * (1 + abs(rm.stop_loss_pct))
-        short_profit = sp["entry_price"] * (1 - rm.take_profit_pct)
+        # ATR SL/TP가 있으면 절대가격, 없으면 비율 기준 (숏은 방향이 반대)
+        short_stop   = sp.get("atr_sl") or sp["entry_price"] * (1 + abs(rm.stop_loss_pct))
+        short_profit = sp.get("atr_tp") or sp["entry_price"] * (1 - rm.take_profit_pct)
 
         if price >= short_stop:
             if ex.close_short(market, sp["volume"]):
                 loss_pct = (price - sp["entry_price"]) / sp["entry_price"] * 100
                 notifier.notify_stop_loss(f"{ex_name}/{market} 숏", sp["entry_price"], price)
-                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
+                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
                 logger.warning(f"[{ex_name}][{market}] 숏 손절 ({loss_pct:+.2f}%)")
             return
 
@@ -303,7 +399,7 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
             if ex.close_short(market, sp["volume"]):
                 gain_pct = (sp["entry_price"] - price) / sp["entry_price"] * 100
                 notifier.notify_take_profit(f"{ex_name}/{market} 숏", sp["entry_price"], price)
-                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
+                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
                 logger.info(f"[{ex_name}][{market}] 숏 익절 (+{gain_pct:.2f}%)")
             return
 
@@ -312,19 +408,55 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
     if signal_df.empty:
         return
 
+    # Volume Exit Warning (EmperorBTC: 보유 중 거래량 저하 경고)
+    if lp["held"] or sp["held"]:
+        if _check_volume_exit_warning(signal_df):
+            logger.warning(f"[{ex_name}][{market}] [VolumeExit] 거래량 저하 지속, 청산 고려")
+
     latest  = signal_df.iloc[-1]
     signal  = latest.get("signal", 0)
     ma200   = latest.get("ma200", 0)
     trend   = "▲상승" if price > ma200 else "▼하락"
+
+    # ATR 기반 동적 SL/TP 추출 (없으면 None → RiskManager 비율 기준 사용)
+    import math as _math
+    def _safe_float(v):
+        try:
+            f = float(v)
+            return None if _math.isnan(f) or f <= 0 else f
+        except (TypeError, ValueError):
+            return None
+
+    atr_sl_long  = _safe_float(latest.get("atr_sl_long"))
+    atr_tp_long  = _safe_float(latest.get("atr_tp_long"))
+    atr_sl_short = _safe_float(latest.get("atr_sl_short"))
+    atr_tp_short = _safe_float(latest.get("atr_tp_short"))
 
     logger.info(
         f"[{ex_name}][{market}] 현재가: {price:,.2f} | MA200: {ma200:,.2f} "
         f"| {trend} | 신호: {int(signal)}"
     )
 
+    # ── 스윙 숏 추세 반전 청산 ────────────────────────
+    # 진입 조건(MA200 하향 + EMA 하향)이 무너지면 즉시 청산
+    if ex_name == "okx" and sp["held"] and sp["entry_price"] > 0:
+        ema_20 = float(latest.get("ema_20", 0) or 0)
+        ema_55 = float(latest.get("ema_55", 0) or 0)
+        ema_reversed = ema_20 > 0 and ema_55 > 0 and ema_20 > ema_55   # EMA 상향 재정렬
+        ma_reversed  = ma200 > 0 and price > ma200                       # MA200 위 복귀
+        if ema_reversed or ma_reversed:
+            reason = "EMA상향재정렬" if ema_reversed else "MA200위복귀"
+            if ex.close_short(market, sp["volume"]):
+                pnl = (sp["entry_price"] - price) / sp["entry_price"] * 100
+                notifier.notify_sell(f"{ex_name}/{market} 스윙숏({reason})", price, sp["volume"], pnl)
+                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
+                logger.info(f"[{ex_name}][{market}] 스윙 숏 추세반전 청산 [{reason}] | {pnl:+.2f}%")
+            return
+
     cash   = ex.get_balance_quote()
-    weight = ASSET_WEIGHTS.get(market, 0.5)
-    invest = rm.calc_position_size(cash, price) * weight
+    n_mkts = len(get_markets(ex_name))
+    weight = ASSET_WEIGHTS.get(market, round(1.0 / n_mkts, 4))
+    invest = rm.calc_position_size(cash * weight, price)
 
     # ── 롱 진입 (signal=1) ────────────────────────────
     if signal == 1 and not lp["held"]:
@@ -334,7 +466,10 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
               else ex.buy_market_order(market, invest))
         if invest > 0 and ok:
             vol = invest / price
-            lp.update({"held": True, "entry_price": price, "volume": vol})
+            lp.update({
+                "held": True, "entry_price": price, "volume": vol,
+                "atr_sl": atr_sl_long, "atr_tp": atr_tp_long,
+            })
             tag = "선물롱" if ex_name == "okx" else "현물롱"
             notifier.notify_buy(f"{ex_name}/{market} {tag}", price, invest)
             logger.info(f"[{ex_name}][{market}] {tag} 진입 | {invest:,.2f} {ex.quote_currency}")
@@ -344,7 +479,10 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
         if invest > 0 and isinstance(ex, OKXExchange):
             if ex.open_short(market, invest, leverage=1):
                 vol = invest / price
-                sp.update({"held": True, "entry_price": price, "volume": vol})
+                sp.update({
+                    "held": True, "entry_price": price, "volume": vol,
+                    "atr_sl": atr_sl_short, "atr_tp": atr_tp_short,
+                })
                 notifier.notify_buy(f"{ex_name}/{market} 스윙숏↓", price, invest)
                 logger.info(f"[{ex_name}][{market}] 스윙 숏 진입 | {invest:,.2f} USDT")
 
@@ -355,7 +493,7 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
         if _close(market, lp["volume"]):
             pnl = (price - lp["entry_price"]) / lp["entry_price"] * 100
             notifier.notify_sell(f"{ex_name}/{market}", price, lp["volume"], pnl)
-            lp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
+            lp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
             logger.info(f"[{ex_name}][{market}] 롱 청산 | {pnl:+.2f}%")
 
 
@@ -516,6 +654,11 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
     if signal_df.empty:
         return
 
+    # Volume Exit Warning (EmperorBTC: 단타 보유 중 거래량 저하 경고)
+    if lp["held"] or sp["held"]:
+        if _check_volume_exit_warning(signal_df):
+            logger.warning(f"[{ex_name}][{market}] [VolumeExit] 단타 거래량 저하, 청산 고려")
+
     latest     = signal_df.iloc[-1]
     signal     = latest.get("signal", 0)
     confidence = int(latest.get("confidence", 1))
@@ -540,21 +683,34 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
         logger.info(f"[{ex_name}][{market}] 단타 차단 — Top Trader: {top_reason}")
         return
 
-    # 최종 확신도: 전략 기반 + Top Trader 보정, 1~5 클리핑
-    confidence = max(1, min(5, confidence + top_delta))
+    # 매크로 환경 신호 (FGI, 펀딩비, L/S비율, 도미넌스, VIX, DXY)
+    macro_delta, macro_blocked, macro_reason = 0, False, ""
+    if _MACRO_ENABLED:
+        macro_delta, macro_blocked, macro_reason = calc_macro_signal(
+            direction, market,
+            finnhub_token=_FINNHUB_TOKEN,
+            av_key=_AV_KEY,
+        )
+
+    if macro_blocked:
+        logger.info(f"[{ex_name}][{market}] 단타 차단 — Macro: {macro_reason}")
+        return
+
+    # 최종 확신도: 전략 기반 + Top Trader 보정 + 매크로 보정, 1~5 클리핑
+    confidence = max(1, min(5, confidence + top_delta + macro_delta))
     leverage   = min(confidence, MAX_LEV)
 
     trend_str = "▲상승" if daily_uptrend else "▼하락"
     logger.info(
         f"[{ex_name}][{market}] 단타 | 현재가: {price:,.2f} | 일봉추세: {trend_str} "
-        f"| 신호: {int(signal)} | TopTrader: {top_reason} "
+        f"| 신호: {int(signal)} | TopTrader: {top_reason} | Macro: {macro_reason} "
         f"| 확신도: {confidence}/5 → {leverage}x"
     )
 
     cash       = ex.get_balance_quote()
-    scalp_cash = cash * _SCALP_RATIO
-    weight     = ASSET_WEIGHTS.get(market, 0.5)
-    invest     = rm.calc_position_size(scalp_cash, price) * weight
+    n_mkts     = len(get_markets(ex_name))
+    weight     = ASSET_WEIGHTS.get(market, round(1.0 / n_mkts, 4))
+    invest     = rm.calc_position_size(cash * _SCALP_RATIO * weight, price)
 
     # ── 단타 롱 진입 (선물, 상승장 전용) ─────────────
     if signal == 1 and daily_uptrend and not lp["held"]:
@@ -586,6 +742,19 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
 
 def send_daily_report():
     lines = [f"📊 일일 리포트  {datetime.now().strftime('%Y-%m-%d')}"]
+    if _MACRO_ENABLED:
+        try:
+            fgi = fetch_fear_greed()
+            dom = fetch_btc_dominance()
+            macro_lines = []
+            if fgi:
+                macro_lines.append(f"공포탐욕지수: {fgi['value']} ({fgi['classification']})")
+            if dom:
+                macro_lines.append(f"BTC 도미넌스: {dom:.1f}%")
+            if macro_lines:
+                lines.append("\n[매크로]\n" + "\n".join(macro_lines))
+        except Exception:
+            pass
     for ex_name, ex in EXCHANGES.items():
         equity = calc_total_equity(ex_name)
         lines.append(f"\n[{ex_name}] 총 자산: {equity:,.2f} {ex.quote_currency}")
@@ -637,7 +806,8 @@ def main():
     logger.info(f"  전략 (OKX 스윙): {strategy_longshort.name}")
     logger.info(f"  전략 (OKX 단타): {strategy_scalp.name} | 1H | SL:{SC_CFG.get('stop_loss_pct',0)*100:.1f}% TP:{SC_CFG.get('take_profit_pct',0)*100:.1f}%")
     logger.info(f"  단타 자본 비중: OKX 잔고의 {int(_SCALP_RATIO*100)}%")
-    logger.info(f"  종목: BTC 70% / ETH 30%")
+    okx_n = len(get_markets("okx")) if "okx" in EXCHANGES else 0
+    logger.info(f"  OKX 종목: {okx_n}개 (시가총액 가중 동적 배분)")
     logger.info("=" * 60)
 
     scalp_status = f"단타({'ON' if SC_CFG.get('enabled') else 'OFF'})"

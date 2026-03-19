@@ -39,6 +39,8 @@ class Backtester:
     slippage         : 슬리피지율 (기본 0.1% = 0.001)
     stop_loss_pct    : 손절 비율 (기본 -3% = -0.03 / None이면 미사용)
     take_profit_pct  : 익절 비율 (기본 5% = 0.05 / None이면 미사용)
+    leverage         : 레버리지 배수 (기본 1.0 — OKX 선물 시 조정)
+    use_atr_sl       : True이면 신호 df의 atr_sl/atr_tp 컬럼 우선 사용
     """
 
     def __init__(
@@ -49,6 +51,8 @@ class Backtester:
         slippage: float = 0.001,
         stop_loss_pct: Optional[float] = -0.03,
         take_profit_pct: Optional[float] = 0.05,
+        leverage: float = 1.0,
+        use_atr_sl: bool = False,
     ):
         self.strategy = strategy
         self.initial_capital = initial_capital
@@ -56,6 +60,8 @@ class Backtester:
         self.slippage = slippage
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.leverage = leverage
+        self.use_atr_sl = use_atr_sl
 
         self.equity_curve: pd.Series = None
         self.returns: pd.Series = None
@@ -91,60 +97,123 @@ class Backtester:
         return metrics
 
     def _simulate(self, df: pd.DataFrame) -> pd.DataFrame:
-        """포지션 시뮬레이션 — 자산곡선 계산"""
+        """포지션 시뮬레이션 — 자산곡선 계산 (롱/숏 양방향 + 레버리지 지원)"""
         df = df.copy()
 
         capital = self.initial_capital
-        position = 0      # 0: 미보유, 1: 보유
-        entry_price = 0.0
+
+        # 롱 상태
+        long_pos    = 0
+        long_entry  = 0.0
+        long_sl     = None  # ATR 기반 절대 손절가
+        long_tp     = None  # ATR 기반 절대 익절가
+
+        # 숏 상태
+        short_pos   = 0
+        short_entry = 0.0
+        short_sl    = None
+        short_tp    = None
+
         equity_list = []
         daily_return_list = []
 
         for i, (idx, row) in enumerate(df.iterrows()):
-            sig = row.get("signal", 0)
+            sig   = row.get("signal", 0)
             close = row["close"]
-            open_ = row["open"]
 
-            # 손절/익절 체크 (포지션 보유 중)
-            if position == 1 and entry_price > 0:
-                change = (close - entry_price) / entry_price
-                if self.stop_loss_pct and change <= self.stop_loss_pct:
-                    # 손절 → 종가로 청산
-                    exit_p = close * (1 - self.slippage)
-                    capital *= (1 + (exit_p - entry_price) / entry_price)
-                    capital *= (1 - self.commission)
-                    position = 0
-                    entry_price = 0.0
-                    df.at[idx, "signal"] = -1  # 강제 매도 표시
+            # ATR 기반 SL/TP (있으면 사용)
+            row_atr_sl_long  = row.get("atr_sl_long",  None) if self.use_atr_sl else None
+            row_atr_tp_long  = row.get("atr_tp_long",  None) if self.use_atr_sl else None
+            row_atr_sl_short = row.get("atr_sl_short", None) if self.use_atr_sl else None
+            row_atr_tp_short = row.get("atr_tp_short", None) if self.use_atr_sl else None
 
-                elif self.take_profit_pct and change >= self.take_profit_pct:
-                    # 익절 → 종가로 청산
+            # ── 롱 손절/익절 ──────────────────────────────────
+            if long_pos == 1 and long_entry > 0:
+                sl_price = long_sl if long_sl else (
+                    long_entry * (1 + self.stop_loss_pct) if self.stop_loss_pct else None
+                )
+                tp_price = long_tp if long_tp else (
+                    long_entry * (1 + self.take_profit_pct) if self.take_profit_pct else None
+                )
+                if sl_price and close <= sl_price:
                     exit_p = close * (1 - self.slippage)
-                    capital *= (1 + (exit_p - entry_price) / entry_price)
+                    pnl = (exit_p - long_entry) / long_entry * self.leverage
+                    capital *= (1 + pnl)
                     capital *= (1 - self.commission)
-                    position = 0
-                    entry_price = 0.0
+                    long_pos = 0; long_entry = 0.0; long_sl = None; long_tp = None
+                    df.at[idx, "signal"] = -1
+                elif tp_price and close >= tp_price:
+                    exit_p = close * (1 - self.slippage)
+                    pnl = (exit_p - long_entry) / long_entry * self.leverage
+                    capital *= (1 + pnl)
+                    capital *= (1 - self.commission)
+                    long_pos = 0; long_entry = 0.0; long_sl = None; long_tp = None
                     df.at[idx, "signal"] = -1
 
-            prev_capital = capital
+            # ── 숏 손절/익절 ──────────────────────────────────
+            if short_pos == 1 and short_entry > 0:
+                sl_price = short_sl if short_sl else (
+                    short_entry * (1 + abs(self.stop_loss_pct)) if self.stop_loss_pct else None
+                )
+                tp_price = short_tp if short_tp else (
+                    short_entry * (1 - self.take_profit_pct) if self.take_profit_pct else None
+                )
+                if sl_price and close >= sl_price:
+                    exit_p = close * (1 + self.slippage)
+                    pnl = (short_entry - exit_p) / short_entry * self.leverage
+                    capital *= (1 + pnl)
+                    capital *= (1 - self.commission)
+                    short_pos = 0; short_entry = 0.0; short_sl = None; short_tp = None
+                    df.at[idx, "signal"] = -2
+                elif tp_price and close <= tp_price:
+                    exit_p = close * (1 + self.slippage)
+                    pnl = (short_entry - exit_p) / short_entry * self.leverage
+                    capital *= (1 + pnl)
+                    capital *= (1 - self.commission)
+                    short_pos = 0; short_entry = 0.0; short_sl = None; short_tp = None
+                    df.at[idx, "signal"] = -2
 
-            # 매수 신호
-            if sig == 1 and position == 0:
-                entry_price = close * (1 + self.slippage)
+            # ── 신호 처리 ─────────────────────────────────────
+            # 롱 진입
+            if sig == 1 and long_pos == 0 and short_pos == 0:
+                long_entry = close * (1 + self.slippage)
                 capital *= (1 - self.commission)
-                position = 1
+                long_pos = 1
+                if self.use_atr_sl and row_atr_sl_long and not np.isnan(row_atr_sl_long):
+                    long_sl = float(row_atr_sl_long)
+                    long_tp = float(row_atr_tp_long) if row_atr_tp_long and not np.isnan(row_atr_tp_long) else None
 
-            # 매도 신호
-            elif sig == -1 and position == 1:
+            # 롱 청산
+            elif sig == -1 and long_pos == 1:
                 exit_p = close * (1 - self.slippage)
-                capital *= (1 + (exit_p - entry_price) / entry_price)
+                pnl = (exit_p - long_entry) / long_entry * self.leverage
+                capital *= (1 + pnl)
                 capital *= (1 - self.commission)
-                position = 0
-                entry_price = 0.0
+                long_pos = 0; long_entry = 0.0; long_sl = None; long_tp = None
 
-            # 포지션 보유 중 자산 반영 (미실현 손익)
-            if position == 1 and entry_price > 0:
-                unrealized = (close - entry_price) / entry_price
+            # 숏 진입
+            elif sig == 2 and short_pos == 0 and long_pos == 0:
+                short_entry = close * (1 - self.slippage)
+                capital *= (1 - self.commission)
+                short_pos = 1
+                if self.use_atr_sl and row_atr_sl_short and not np.isnan(row_atr_sl_short):
+                    short_sl = float(row_atr_sl_short)
+                    short_tp = float(row_atr_tp_short) if row_atr_tp_short and not np.isnan(row_atr_tp_short) else None
+
+            # 숏 청산
+            elif sig == -2 and short_pos == 1:
+                exit_p = close * (1 + self.slippage)
+                pnl = (short_entry - exit_p) / short_entry * self.leverage
+                capital *= (1 + pnl)
+                capital *= (1 - self.commission)
+                short_pos = 0; short_entry = 0.0; short_sl = None; short_tp = None
+
+            # ── 미실현 손익 반영 ──────────────────────────────
+            if long_pos == 1 and long_entry > 0:
+                unrealized = (close - long_entry) / long_entry * self.leverage
+                current_equity = capital * (1 + unrealized)
+            elif short_pos == 1 and short_entry > 0:
+                unrealized = (short_entry - close) / short_entry * self.leverage
                 current_equity = capital * (1 + unrealized)
             else:
                 current_equity = capital
@@ -164,28 +233,54 @@ class Backtester:
         return df
 
     def _extract_trades(self, df: pd.DataFrame) -> pd.DataFrame:
-        """매매 내역 추출"""
+        """매매 내역 추출 (롱/숏 양방향)"""
         trades = []
-        entry_price = None
-        entry_date = None
+
+        long_entry_price = None
+        long_entry_date  = None
+        short_entry_price = None
+        short_entry_date  = None
 
         for idx, row in df.iterrows():
             sig = row.get("signal", 0)
-            if sig == 1 and entry_price is None:
-                entry_price = row["close"]
-                entry_date = idx
-            elif sig == -1 and entry_price is not None:
+
+            # 롱 진입
+            if sig == 1 and long_entry_price is None:
+                long_entry_price = row["close"]
+                long_entry_date  = idx
+            # 롱 청산
+            elif sig == -1 and long_entry_price is not None:
                 exit_price = row["close"]
-                pnl_pct = (exit_price - entry_price) / entry_price * 100
+                pnl_pct = (exit_price - long_entry_price) / long_entry_price * 100 * self.leverage
                 trades.append({
-                    "entry_date": entry_date,
-                    "exit_date": idx,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "pnl": pnl_pct,
+                    "entry_date": long_entry_date,
+                    "exit_date":  idx,
+                    "side":       "long",
+                    "entry_price": long_entry_price,
+                    "exit_price":  exit_price,
+                    "pnl":         pnl_pct,
                 })
-                entry_price = None
-                entry_date = None
+                long_entry_price = None
+                long_entry_date  = None
+
+            # 숏 진입
+            elif sig == 2 and short_entry_price is None:
+                short_entry_price = row["close"]
+                short_entry_date  = idx
+            # 숏 청산
+            elif sig == -2 and short_entry_price is not None:
+                exit_price = row["close"]
+                pnl_pct = (short_entry_price - exit_price) / short_entry_price * 100 * self.leverage
+                trades.append({
+                    "entry_date":  short_entry_date,
+                    "exit_date":   idx,
+                    "side":        "short",
+                    "entry_price": short_entry_price,
+                    "exit_price":  exit_price,
+                    "pnl":         pnl_pct,
+                })
+                short_entry_price = None
+                short_entry_date  = None
 
         return pd.DataFrame(trades)
 

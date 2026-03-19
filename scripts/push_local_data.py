@@ -1,5 +1,16 @@
 """
-로컬 머신에서 실행: trades.log → docs/data/trades.json, health.json, equity_*.json 저장 후 git push
+로컬 머신에서 실행: 잔고 포함 전체 데이터 → docs/data/*.json 저장 후 git push
+
+GitHub Actions는 캔들/신호(공개 API)만 담당.
+이 스크립트는 Upbit IP 화이트리스트가 적용된 로컬에서 실행해
+포트폴리오/리스크(잔고 조회)를 포함한 나머지 데이터를 채움.
+
+담당 파일:
+  portfolio.json   ← Upbit + OKX 잔고 포함 전체 자산
+  risk.json        ← SL/TP 가격, 일일 손실 한도
+  health.json      ← 봇 실행 상태
+  trades.json      ← 거래 이력
+  equity_*.json    ← 자산 곡선
 
 사용법:
   python scripts/push_local_data.py
@@ -18,6 +29,9 @@ DATA_DIR = ROOT / "docs" / "data"
 LOG_PATH = ROOT / "logs" / "trades.log"
 sys.path.insert(0, str(ROOT))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=ROOT / "config" / ".env")
 
 
 def save(filename: str, data):
@@ -51,34 +65,51 @@ def git_push():
 def export_local():
     print(f"=== 로컬 데이터 수출 시작 ({datetime.now().strftime('%H:%M:%S')}) ===")
 
+    # ── 잔고 데이터 (Upbit + OKX, 로컬 실행이므로 IP 제한 없음) ──
+    try:
+        from dashboard.data_aggregator import DataAggregator
+        agg = DataAggregator()
+
+        try:
+            portfolio = agg.get_portfolio()
+            save("portfolio.json", portfolio)
+        except Exception as e:
+            print(f"  portfolio 실패: {e}")
+
+        try:
+            risk = agg.get_risk_status()
+            save("risk.json", risk)
+        except Exception as e:
+            print(f"  risk 실패: {e}")
+
+    except Exception as e:
+        print(f"  DataAggregator 초기화 실패 (잔고 데이터 스킵): {e}")
+
+    # ── 로그 기반 데이터 (봇 실행 상태 / 거래 이력 / 자산 곡선) ──
     if not LOG_PATH.exists():
         print(f"  로그 파일 없음: {LOG_PATH}")
-        return
+    else:
+        from dashboard.log_parser import LogParser
+        parser = LogParser(str(LOG_PATH))
 
-    from dashboard.log_parser import LogParser
-    parser = LogParser(str(LOG_PATH))
-
-    # 헬스
-    try:
-        health = parser.get_health()
-        save("health.json", health)
-    except Exception as e:
-        print(f"  health 실패: {e}")
-
-    # 거래 이력 (최근 200건)
-    try:
-        trades = parser.parse_trades(200)
-        save("trades.json", {"trades": trades, "total": len(trades)})
-    except Exception as e:
-        print(f"  trades 실패: {e}")
-
-    # 자산 곡선
-    for exchange in ["upbit", "okx"]:
         try:
-            equity = parser.get_equity_history(exchange)
-            save(f"equity_{exchange}.json", equity)
+            health = parser.get_health()
+            save("health.json", health)
         except Exception as e:
-            print(f"  equity_{exchange} 실패: {e}")
+            print(f"  health 실패: {e}")
+
+        try:
+            trades = parser.parse_trades(200)
+            save("trades.json", {"trades": trades, "total": len(trades)})
+        except Exception as e:
+            print(f"  trades 실패: {e}")
+
+        for exchange in ["upbit", "okx"]:
+            try:
+                equity = parser.get_equity_history(exchange)
+                save(f"equity_{exchange}.json", equity)
+            except Exception as e:
+                print(f"  equity_{exchange} 실패: {e}")
 
     git_push()
     print("=== 완료 ===")

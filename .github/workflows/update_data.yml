@@ -25,13 +25,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Export exchange data
+      - name: Export candles and signals
         env:
-          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
-          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
-          OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSPHRASE:   ${{ secrets.OKX_PASSPHRASE }}
+          # Upbit 키 불필요 — 캔들은 공개 API, 잔고는 push_local_data.py(로컬)에서 담당
+          OKX_API_KEY:    ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
         run: python scripts/export_exchange_data.py
 
       - name: Commit and push data

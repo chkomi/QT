@@ -17,17 +17,33 @@ markets:
   - KRW-ETH
 
 # 거래소별 거래 종목 (미지정 시 markets 전체 사용)
+# OKX: 시가총액 상위 20위 (스테이블코인·래핑토큰 제외, OKX 선물 지원 종목)
 exchange_markets:
   okx:
-    - KRW-BTC   # BTC/USDT:USDT 선물
-    - KRW-ETH   # ETH/USDT:USDT 선물
-    - KRW-SOL   # SOL/USDT:USDT 선물
-    - KRW-XRP   # XRP/USDT:USDT 선물
+    - KRW-BTC    # 1위
+    - KRW-ETH    # 2위
+    - KRW-BNB    # 3위
+    - KRW-SOL    # 4위
+    - KRW-XRP    # 5위
+    - KRW-DOGE   # 6위
+    - KRW-ADA    # 7위
+    - KRW-AVAX   # 8위
+    - KRW-LINK   # 9위
+    - KRW-DOT    # 10위
+    - KRW-TON    # 11위
+    - KRW-MATIC  # 12위 (POL)
+    - KRW-UNI    # 13위
+    - KRW-LTC    # 14위
+    - KRW-BCH    # 15위
+    - KRW-APT    # 16위
+    - KRW-NEAR   # 17위
+    - KRW-OP     # 18위
+    - KRW-ARB    # 19위
+    - KRW-SUI    # 20위
 
-# BTC : ETH 비중 배분 (합계 = 1.0)
-asset_weights:
-  KRW-BTC: 0.7
-  KRW-ETH: 0.3
+# asset_weights: CoinGecko 시가총액 기반 동적 계산으로 대체 (매시 갱신)
+# 폴백(API 실패 시): 동일 비중 1/20 = 5% 씩
+asset_weights: {}  # runtime에 refresh_asset_weights()로 채워짐
 
 trading:
   initial_capital: 1000000       # 초기 투자금 (원)
@@ -39,7 +55,7 @@ trading:
 
 strategies:
   volatility_breakout:
-    k: 0.5                       # 변동폭 비율 (0.3 ~ 0.7)
+    k: 0.4                       # 변동폭 비율 — 백테스트 최적값 (샤프 1.334, 승률 70%)
     interval: "day"              # 캔들 단위
     enabled: true
     volume_multiplier: 1.5       # 거래량 급증 기준 배수 (워뇨띠)
@@ -47,6 +63,18 @@ strategies:
     vp_lookback: 20              # Volume Profile 기간 (웅크웅크)
     vp_bins: 50                  # 가격 구간 수
     fib_lookback: 50             # 피보나치 스윙 탐색 기간 (웅크웅크)
+    short_consec: 2              # 숏 진입 연속 하락 봉 수 (일봉 기준)
+    # ── 신규 지표 (백테스트로 효과 검증 후 true 전환) ──
+    use_supertrend: true         # Supertrend 추세 필터 (OKX 숏 정확도↑)
+    supertrend_period: 7
+    supertrend_multiplier: 3.0
+    use_macd_filter: true        # MACD 방향 필터 — 백테스트 결과: 수익률 +78.6%, 샤프 0.515 (최우수)
+    use_atr_sl: true             # ATR 동적 SL/TP (고정 % 대체)
+    atr_period: 14
+    atr_sl_multiplier: 1.5       # SL = 진입가 ± ATR × 1.5
+    atr_tp_multiplier: 3.0       # TP = 진입가 ± ATR × 3.0  (2:1 손익비)
+    use_rsi_divergence: true     # RSI 다이버전스 confidence boost (EmperorBTC 활성화)
+    use_bb_squeeze: false        # BB squeeze confidence boost (스캘핑 효과적)
 
   moving_average:
     short_window: 5
@@ -66,6 +94,10 @@ okx_futures:
   use_short: true
   leverage: 1                  # 1x = 레버리지 없음 (원금만 위험)
   margin_mode: isolated        # isolated: 포지션별 독립 / cross: 전체 잔고 공유
+  # ── 시가총액 가중치 상한 (쏠림 방지) ──────────────────
+  weight_cap_btc: 0.30         # BTC 최대 비중 30%
+  weight_cap_eth: 0.20         # ETH 최대 비중 20%
+  weight_cap_alt: 0.08         # 알트코인 종목당 최대 비중 8%
 
 # ── 단타 전략 (OKX 전용, 1시간봉) ───────────────────────
 # 설계 원칙:
@@ -77,8 +109,9 @@ okx_futures:
 scalp_trading:
   enabled: true
   timeframe: minute60            # 1시간봉
-  capital_ratio: 0.075           # OKX 잔고의 30% ÷ 4종목 = 종목당 7.5%
-  k: 0.4                         # 돌파 민감도 (스윙 0.5보다 타이트)
+  total_capital_ratio: 0.30      # OKX 잔고의 30% = 전체 단타 자본 (종목별 = 30% × 시가총액가중치)
+  capital_ratio: 0.075           # 하위 호환용 (total_capital_ratio 없을 때 폴백)
+  k: 0.35                        # 돌파 민감도 — 백테스트 결과 반영 (스윙 0.4보다 타이트)
   ma_period: 50                  # 50H ≈ 2일 단기 추세
   volume_multiplier: 2.0         # 거래량 필터 (스윙 1.5x보다 엄격)
   volume_lookback: 20
@@ -88,6 +121,7 @@ scalp_trading:
   stop_loss_pct: -0.012          # -1.2% 손절
   take_profit_pct: 0.020         # +2.0% 익절  (손익비 1.67:1)
   max_holding_hours: 6           # 6시간 초과 시 강제 청산
+  short_consec: 3                # 숏 진입 연속 하락 봉 수 (1H봉 기준 — 노이즈 감소)
   daily_loss_limit_pct: -0.10   # 단타 일일 손실 한도 -10%
   # 동적 레버리지 (확신도 1~5 → 1x~max_leverage)
   max_leverage: 5                # 최대 레버리지 (확신도 5일 때 적용)
@@ -107,3 +141,37 @@ notification:
     enabled: false
     token: ""
     chat_id: ""
+
+# ── 매크로 환경 지표 통합 ──────────────────────────────────────────────────────
+# 실시간 외부 데이터(공포탐욕지수, 펀딩비, BTC도미넌스 등)를 단타 확신도에 반영
+macro_factors:
+  enabled: true
+  # ── 무료 API 키 (없으면 해당 지표 자동 비활성화) ──
+  finnhub_token: ""          # VIX 조회용 — https://finnhub.io 무료 등록
+  alpha_vantage_key: ""      # DXY 조회용 — https://www.alphavantage.co 무료 등록
+  # ── 캐시 TTL (초): 동일 데이터 반복 호출 방지 ──────
+  fgi_ttl: 3600              # Fear & Greed Index: 일 1회 업데이트 → 1시간 캐시
+  okx_ttl: 300               # OKX 펀딩비/L/S비율: 5분 캐시
+  market_ttl: 300            # 도미넌스/VIX/DXY: 5분 캐시
+  # ── CoinGecko ID 매핑 (ticker → CoinGecko API ID) ──
+  coingecko_ids:
+    BTC: bitcoin
+    ETH: ethereum
+    BNB: binancecoin
+    SOL: solana
+    XRP: ripple
+    DOGE: dogecoin
+    ADA: cardano
+    AVAX: avalanche-2
+    LINK: chainlink
+    DOT: polkadot
+    TON: the-open-network
+    MATIC: matic-network
+    UNI: uniswap
+    LTC: litecoin
+    BCH: bitcoin-cash
+    APT: aptos
+    NEAR: near
+    OP: optimism
+    ARB: arbitrum
+    SUI: sui
