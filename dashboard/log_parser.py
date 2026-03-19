@@ -2,7 +2,8 @@
 trades.log 파서 — 거래 이벤트를 구조화된 데이터로 변환
 
 실제 로그 포맷:
-  2026-03-18 07:07:56,960 [INFO] main — [upbit][KRW-BTC] 롱 진입 | 14,828.00 KRW
+  2026-03-18 07:07:56,960 [INFO] main — [upbit][KRW-BTC] 현물롱 진입 | 14,828.00 KRW
+  2026-03-18 07:07:56,960 [INFO] main — [okx][KRW-SOL] 스윙 숏 진입 | 138.25 USDT
 구분자: — (em dash U+2014)
 """
 import re
@@ -22,14 +23,29 @@ BASE_RE = re.compile(
     r'(?P<msg>.+)$'
 )
 
-# ── 거래 이벤트 패턴 ────────────────────────────────────────────
-LONG_ENTRY_RE   = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 롱 진입 \| (?P<amt>[\d,.]+) (?P<cur>KRW|USDT)$')
+# ── 스윙 거래 이벤트 패턴 ────────────────────────────────────────
+# 롱 진입: [ex][mkt] 현물롱/선물롱 진입 | amt KRW|USDT
+LONG_ENTRY_RE   = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] (?:현물롱|선물롱) 진입 \| (?P<amt>[\d,.]+) (?P<cur>KRW|USDT)$')
 LONG_CLOSE_RE   = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 롱 청산 \| (?P<pnl>[+-][\d.]+)%$')
 LONG_SL_RE      = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 롱 손절$')
 LONG_TP_RE      = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 롱 익절$')
-SHORT_ENTRY_RE  = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 숏 진입 \| (?P<amt>[\d,.]+) USDT$')
-SHORT_SL_RE     = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 숏 손절 \((?P<pnl>[+-][\d.]+)%\)$')
-SHORT_TP_RE     = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 숏 익절 \(\+(?P<pnl>[\d.]+)%\)$')
+# 숏 진입: [ex][mkt] 스윙 숏 진입 | amt USDT
+SHORT_ENTRY_RE       = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 스윙 숏 진입 \| (?P<amt>[\d,.]+) USDT$')
+SHORT_SL_RE          = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 숏 손절 \((?P<pnl>[+-][\d.]+)%\)$')
+SHORT_TP_RE          = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 숏 익절 \(\+(?P<pnl>[\d.]+)%\)$')
+# 스윙 숏 추세반전 청산: [ex][mkt] 스윙 숏 추세반전 청산 [reason] | pnl%
+SHORT_TREND_CLOSE_RE = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 스윙 숏 추세반전 청산 \[(?P<reason>[^\]]+)\] \| (?P<pnl>[+-][\d.]+)%$')
+
+# ── 단타 거래 이벤트 패턴 ────────────────────────────────────────
+# 단타 롱/숏 진입: [ex][mkt] 단타 롱/숏 진입 | amt USDT | Nx (확신도 N/5)
+SCALP_LONG_ENTRY_RE       = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 롱 진입 \| (?P<amt>[\d,.]+) USDT \| (?P<lev>\d+)x')
+SCALP_SHORT_ENTRY_RE      = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 숏 진입 \| (?P<amt>[\d,.]+) USDT \| (?P<lev>\d+)x')
+SCALP_LONG_TIME_CLOSE_RE  = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 롱 시간청산 \d+H \| (?P<pnl>[+-][\d.]+)%$')
+SCALP_SHORT_TIME_CLOSE_RE = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 숏 시간청산 \d+H \| (?P<pnl>[+-][\d.]+)%$')
+SCALP_LONG_SL_RE          = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 롱 손절$')
+SCALP_LONG_TP_RE          = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 롱 익절 \(\+(?P<pnl>[\d.]+)%\)$')
+SCALP_SHORT_SL_RE         = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 숏 손절$')
+SCALP_SHORT_TP_RE         = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 숏 익절 \(\+(?P<pnl>[\d.]+)%\)$')
 PRICE_SIGNAL_RE = re.compile(
     r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 현재가: (?P<price>[\d,.]+)'
     r' \| MA200: (?P<ma200>[\d,.]+)'
@@ -161,6 +177,77 @@ class LogParser:
                         "timestamp": ts_iso, "timestamp_unix": ts_unix,
                         "exchange": mm.group("ex"), "market": mm.group("mkt"),
                         "side": "cover", "type": "short_take_profit",
+                        "amount": None, "currency": None,
+                        "pnl_pct": float(mm.group("pnl")),
+                    }
+                elif mm := SHORT_TREND_CLOSE_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "cover", "type": "short_trend_close",
+                        "amount": None, "currency": None,
+                        "pnl_pct": float(mm.group("pnl")),
+                    }
+                # ── 단타 ─────────────────────────────────────────
+                elif mm := SCALP_LONG_ENTRY_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "buy", "type": "scalp_long_entry",
+                        "amount": _parse_float(mm.group("amt")),
+                        "currency": "USDT", "pnl_pct": None,
+                    }
+                elif mm := SCALP_SHORT_ENTRY_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "short", "type": "scalp_short_entry",
+                        "amount": _parse_float(mm.group("amt")),
+                        "currency": "USDT", "pnl_pct": None,
+                    }
+                elif mm := SCALP_LONG_TIME_CLOSE_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "sell", "type": "scalp_long_time_close",
+                        "amount": None, "currency": None,
+                        "pnl_pct": float(mm.group("pnl")),
+                    }
+                elif mm := SCALP_SHORT_TIME_CLOSE_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "cover", "type": "scalp_short_time_close",
+                        "amount": None, "currency": None,
+                        "pnl_pct": float(mm.group("pnl")),
+                    }
+                elif mm := SCALP_LONG_SL_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "sell", "type": "scalp_stop_loss",
+                        "amount": None, "currency": None, "pnl_pct": None,
+                    }
+                elif mm := SCALP_LONG_TP_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "sell", "type": "scalp_take_profit",
+                        "amount": None, "currency": None,
+                        "pnl_pct": float(mm.group("pnl")),
+                    }
+                elif mm := SCALP_SHORT_SL_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "cover", "type": "scalp_short_stop_loss",
+                        "amount": None, "currency": None, "pnl_pct": None,
+                    }
+                elif mm := SCALP_SHORT_TP_RE.match(msg):
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "side": "cover", "type": "scalp_short_take_profit",
                         "amount": None, "currency": None,
                         "pnl_pct": float(mm.group("pnl")),
                     }

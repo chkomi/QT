@@ -1,1 +1,1 @@
-{"trades": [], "total": 0}
+{"trades": [{"timestamp": "2026-03-19T07:00:46.429000", "timestamp_unix": 1773871246, "exchange": "upbit", "market": "KRW-BTC", "side": "sell", "type": "stop_loss", "amount": null, "currency": null, "pnl_pct": null}, {"timestamp": "2026-03-18T19:17:29.787000", "timestamp_unix": 1773829049, "exchange": "okx", "market": "KRW-SOL", "side": "short", "type": "short_entry", "amount": 138.25, "currency": "USDT", "pnl_pct": null}], "total": 2}

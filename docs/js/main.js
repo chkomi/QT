@@ -46,13 +46,22 @@ const SIGNAL_LABEL = {
 };
 
 const TYPE_KR = {
-  long_entry:        '롱 진입',
-  long_close:        '롱 청산',
-  stop_loss:         '손  절',
-  take_profit:       '익  절',
-  short_entry:       '숏 진입',
-  short_stop_loss:   '숏 손절',
-  short_take_profit: '숏 익절',
+  long_entry:              '롱 진입',
+  long_close:              '롱 청산',
+  stop_loss:               '손  절',
+  take_profit:             '익  절',
+  short_entry:             '숏 진입',
+  short_stop_loss:         '숏 손절',
+  short_take_profit:       '숏 익절',
+  short_trend_close:       '추세반전청산',
+  scalp_long_entry:        '단타 롱 진입',
+  scalp_short_entry:       '단타 숏 진입',
+  scalp_long_time_close:   '단타 시간청산',
+  scalp_short_time_close:  '단타 숏시간청산',
+  scalp_stop_loss:         '단타 손절',
+  scalp_take_profit:       '단타 익절',
+  scalp_short_stop_loss:   '단타 숏손절',
+  scalp_short_take_profit: '단타 숏익절',
 };
 
 // ── DOM 참조 ────────────────────────────────────────────────────
@@ -460,13 +469,22 @@ function renderTradeTable(tradesData) {
   }
 
   const rowClass = {
-    long_entry:        'row-buy',
-    long_close:        'row-sell',
-    stop_loss:         'row-sl',
-    take_profit:       'row-tp',
-    short_entry:       'row-short',
-    short_stop_loss:   'row-sl',
-    short_take_profit: 'row-tp',
+    long_entry:              'row-buy',
+    long_close:              'row-sell',
+    stop_loss:               'row-sl',
+    take_profit:             'row-tp',
+    short_entry:             'row-short',
+    short_stop_loss:         'row-sl',
+    short_take_profit:       'row-tp',
+    short_trend_close:       'row-sell',
+    scalp_long_entry:        'row-buy',
+    scalp_short_entry:       'row-short',
+    scalp_long_time_close:   'row-sell',
+    scalp_short_time_close:  'row-sell',
+    scalp_stop_loss:         'row-sl',
+    scalp_take_profit:       'row-tp',
+    scalp_short_stop_loss:   'row-sl',
+    scalp_short_take_profit: 'row-tp',
   };
 
   tbody.innerHTML = tradesData.map(t => {
