@@ -211,6 +211,10 @@ function renderSignals(signals) {
     const hasSig = s.signal !== 0;
     const volSurge = s.vol_surge;
 
+    // MA200 대비 거리 계산 (signals.json에 직접 필드가 없으므로 여기서 계산)
+    const ma200Gap = (s.ma200 > 0 && s.current_price > 0)
+      ? ((s.current_price - s.ma200) / s.ma200 * 100) : null;
+
     const trendHtml = isUp
       ? `<span class="mini-badge trend-up">▲ 상승</span>`
       : `<span class="mini-badge trend-dn">▼ 하락</span>`;
@@ -218,8 +222,8 @@ function renderSignals(signals) {
       ? `<span class="mini-badge vol-surge">⚡Vol</span>` : '';
     const sigHtml = hasSig
       ? `<span class="mini-badge ${sl.cls}">${sl.text}</span>` : '';
-    const ma200Html = s.ma200_gap != null
-      ? `<span class="mkt-gap ${s.ma200_gap >= 0 ? 'gap-pos' : 'gap-neg'}">MA200 ${s.ma200_gap >= 0 ? '+' : ''}${Number(s.ma200_gap).toFixed(1)}%</span>` : '';
+    const ma200Html = ma200Gap != null
+      ? `<span class="mkt-gap ${ma200Gap >= 0 ? 'gap-pos' : 'gap-neg'}">MA200 ${ma200Gap >= 0 ? '+' : ''}${ma200Gap.toFixed(1)}%</span>` : '';
 
     container.insertAdjacentHTML('beforeend', `
       <div class="market-cell ${hasSig ? 'market-cell-active' : ''}"

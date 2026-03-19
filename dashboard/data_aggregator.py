@@ -128,8 +128,7 @@ class DataAggregator:
                 "minute5": "5m", "minute1": "1m",
             }
             tf     = tf_map.get(interval, "1d")
-            from engine.okx_exchange import SPOT_MAP
-            symbol  = SPOT_MAP.get(market, market)
+            symbol  = ex_okx._spot_symbol(market) if ex_okx else f"{market.replace('KRW-', '')}/USDT"
 
             raw = spot.fetch_ohlcv(symbol, tf, limit=count)
             df  = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
