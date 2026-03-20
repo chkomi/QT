@@ -254,17 +254,18 @@ for ex_name, ex in EXCHANGES.items():
 def calc_total_equity(ex_name: str) -> float:
     ex = EXCHANGES[ex_name]
     total = ex.get_balance_quote()
-    for market in MARKETS:
-        vol = ex.get_balance_coin(market)
-        if vol > 0:
-            price = ex.get_current_price(market)
-            if price:
-                total += vol * price
+    if ex_name != "okx":   # OKX 선물 계정은 코인 잔고 없음 (불필요한 API 호출 제거)
+        for market in MARKETS:
+            vol = ex.get_balance_coin(market)
+            if vol > 0:
+                price = ex.get_current_price(market)
+                if price:
+                    total += vol * price
     return total
 
 
 def sync_positions(ex_name: str):
-    """시작 시 실제 잔고 → 포지션 동기화"""
+    """실제 OKX 포지션 → 봇 메모리 동기화 (시작 시 및 매 사이클 호출)"""
     ex = EXCHANGES[ex_name]
 
     if ex_name == "okx":
@@ -282,6 +283,18 @@ def sync_positions(ex_name: str):
                         {"held": True, "entry_price": p["entry_price"], "volume": p["volume"]}
                     )
                     logger.info(f"[{ex_name}] 선물숏 동기화 | {market} {p['volume']:.6f}개 @ {p['entry_price']:,.2f}")
+                else:
+                    # 포지션 없으면 메모리도 리셋 (불일치 방지)
+                    prev_long  = long_positions[ex_name][market]["held"]
+                    prev_short = short_positions[ex_name][market]["held"]
+                    if prev_long or prev_short:
+                        logger.info(f"[{ex_name}] 포지션 없음 확인, 메모리 리셋 | {market}")
+                    long_positions[ex_name][market].update(
+                        {"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None}
+                    )
+                    short_positions[ex_name][market].update(
+                        {"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None}
+                    )
     else:
         # 업비트/빗썸: 현물 롱 동기화 (KRW 마켓만)
         for market in MARKETS:
@@ -316,6 +329,10 @@ def run_strategy():
         risk_managers[ex_name].reset_daily(equity)
         logger.info(f"[{ex_name}] 총 자산: {equity:,.2f} {ex.quote_currency}")
 
+        # OKX: 매 사이클 포지션 재동기화 (메모리-실제 불일치 방지)
+        if ex_name == "okx" and isinstance(ex, OKXExchange):
+            sync_positions(ex_name)
+
         strat    = strategy_longshort if ex_name == "okx" else strategy_long
         ex_mkts  = get_markets(ex_name)
 
@@ -332,7 +349,7 @@ def run_strategy():
         for market in ex_mkts:
             if market not in ohlcv_cache:
                 continue
-            _process(ex_name, market, ohlcv_cache[market], strat)
+            _process(ex_name, market, ohlcv_cache[market], strat, equity)
 
 
 def _check_volume_exit_warning(df) -> bool:
@@ -348,13 +365,14 @@ def _check_volume_exit_warning(df) -> bool:
         return False
 
 
-def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
+def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, equity: float = None):
     ex  = EXCHANGES[ex_name]
     rm  = risk_managers[ex_name]
     lp  = long_positions[ex_name][market]   # 롱 포지션
     sp  = short_positions[ex_name][market]  # 숏 포지션
 
-    equity = calc_total_equity(ex_name)
+    if equity is None:
+        equity = calc_total_equity(ex_name)
     if not rm.is_trading_allowed(equity):
         logger.warning(f"[{ex_name}][{market}] 거래 중단 상태")
         return
@@ -370,14 +388,14 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
         # ATR SL/TP가 저장되어 있으면 절대가격 기준, 없으면 비율 기준
         if rm.should_stop_loss(lp["entry_price"], price, stop_price=lp.get("atr_sl")):
             if _close_long(market, lp["volume"]):
-                notifier.notify_stop_loss(f"{ex_name}/{market}", lp["entry_price"], price)
                 lp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
+                notifier.notify_stop_loss(f"{ex_name}/{market}", lp["entry_price"], price)
                 logger.warning(f"[{ex_name}][{market}] 롱 손절")
             return
         if rm.should_take_profit(lp["entry_price"], price, take_price=lp.get("atr_tp")):
             if _close_long(market, lp["volume"]):
-                notifier.notify_take_profit(f"{ex_name}/{market}", lp["entry_price"], price)
                 lp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
+                notifier.notify_take_profit(f"{ex_name}/{market}", lp["entry_price"], price)
                 logger.info(f"[{ex_name}][{market}] 롱 익절")
             return
 
@@ -390,16 +408,16 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
         if price >= short_stop:
             if ex.close_short(market, sp["volume"]):
                 loss_pct = (price - sp["entry_price"]) / sp["entry_price"] * 100
-                notifier.notify_stop_loss(f"{ex_name}/{market} 숏", sp["entry_price"], price)
                 sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
+                notifier.notify_stop_loss(f"{ex_name}/{market} 숏", sp["entry_price"], price)
                 logger.warning(f"[{ex_name}][{market}] 숏 손절 ({loss_pct:+.2f}%)")
             return
 
         if price <= short_profit:
             if ex.close_short(market, sp["volume"]):
                 gain_pct = (sp["entry_price"] - price) / sp["entry_price"] * 100
-                notifier.notify_take_profit(f"{ex_name}/{market} 숏", sp["entry_price"], price)
                 sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
+                notifier.notify_take_profit(f"{ex_name}/{market} 숏", sp["entry_price"], price)
                 logger.info(f"[{ex_name}][{market}] 숏 익절 (+{gain_pct:.2f}%)")
             return
 
@@ -448,8 +466,8 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy):
             reason = "EMA상향재정렬" if ema_reversed else "MA200위복귀"
             if ex.close_short(market, sp["volume"]):
                 pnl = (sp["entry_price"] - price) / sp["entry_price"] * 100
+                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "atr_sl": None, "atr_tp": None})
                 notifier.notify_sell(f"{ex_name}/{market} 스윙숏({reason})", price, sp["volume"], pnl)
-                sp.update({"held": False, "entry_price": 0.0, "volume": 0.0})
                 logger.info(f"[{ex_name}][{market}] 스윙 숏 추세반전 청산 [{reason}] | {pnl:+.2f}%")
             return
 
@@ -569,16 +587,17 @@ def run_scalp_strategy():
     for market in ex_mkts:
         if market not in ohlcv_1h or market not in ohlcv_1d:
             continue
-        _process_scalp(ex_name, market, ohlcv_1h[market], ohlcv_1d[market])
+        _process_scalp(ex_name, market, ohlcv_1h[market], ohlcv_1d[market], equity)
 
 
-def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
+def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None):
     ex  = EXCHANGES[ex_name]
     rm  = scalp_risk_managers[ex_name]
     lp  = scalp_long_positions[ex_name][market]
     sp  = scalp_short_positions[ex_name][market]
 
-    equity = calc_total_equity(ex_name)
+    if equity is None:
+        equity = calc_total_equity(ex_name)
     if not rm.is_trading_allowed(equity * _SCALP_RATIO):
         logger.warning(f"[{ex_name}][{market}] 단타 거래 중단 상태")
         return
@@ -596,9 +615,9 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
         if held_h >= MAX_H:
             if isinstance(ex, OKXExchange) and ex.close_long_futures(market, lp["volume"]):
                 pnl = (price - lp["entry_price"]) / lp["entry_price"] * 100
-                notifier.notify_sell(f"{ex_name}/{market} 단타롱(시간)", price, lp["volume"], pnl)
                 lp.update({"held": False, "entry_price": 0.0, "volume": 0.0,
                             "entry_time": None, "leverage": 1})
+                notifier.notify_sell(f"{ex_name}/{market} 단타롱(시간)", price, lp["volume"], pnl)
                 logger.info(f"[{ex_name}][{market}] 단타 롱 시간청산 {MAX_H}H | {pnl:+.2f}%")
             return
 
@@ -607,9 +626,9 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
         if held_h >= MAX_H:
             if ex.close_short(market, sp["volume"]):
                 pnl = (sp["entry_price"] - price) / sp["entry_price"] * 100
-                notifier.notify_sell(f"{ex_name}/{market} 단타숏(시간)", price, sp["volume"], pnl)
                 sp.update({"held": False, "entry_price": 0.0, "volume": 0.0,
                             "entry_time": None, "leverage": 1})
+                notifier.notify_sell(f"{ex_name}/{market} 단타숏(시간)", price, sp["volume"], pnl)
                 logger.info(f"[{ex_name}][{market}] 단타 숏 시간청산 {MAX_H}H | {pnl:+.2f}%")
             return
 
@@ -617,17 +636,17 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
     if lp["held"] and lp["entry_price"] > 0:
         if rm.should_stop_loss(lp["entry_price"], price):
             if isinstance(ex, OKXExchange) and ex.close_long_futures(market, lp["volume"]):
-                notifier.notify_stop_loss(f"{ex_name}/{market} 단타롱", lp["entry_price"], price)
                 lp.update({"held": False, "entry_price": 0.0, "volume": 0.0,
                             "entry_time": None, "leverage": 1})
+                notifier.notify_stop_loss(f"{ex_name}/{market} 단타롱", lp["entry_price"], price)
                 logger.warning(f"[{ex_name}][{market}] 단타 롱 손절")
             return
         if rm.should_take_profit(lp["entry_price"], price):
             if isinstance(ex, OKXExchange) and ex.close_long_futures(market, lp["volume"]):
                 pnl = (price - lp["entry_price"]) / lp["entry_price"] * 100
-                notifier.notify_take_profit(f"{ex_name}/{market} 단타롱", lp["entry_price"], price)
                 lp.update({"held": False, "entry_price": 0.0, "volume": 0.0,
                             "entry_time": None, "leverage": 1})
+                notifier.notify_take_profit(f"{ex_name}/{market} 단타롱", lp["entry_price"], price)
                 logger.info(f"[{ex_name}][{market}] 단타 롱 익절 (+{pnl:.2f}%)")
             return
 
@@ -637,15 +656,15 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d):
         short_profit = sp["entry_price"] * (1 - rm.take_profit_pct)
         if price >= short_stop:
             if ex.close_short(market, sp["volume"]):
-                notifier.notify_stop_loss(f"{ex_name}/{market} 단타숏", sp["entry_price"], price)
                 sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "entry_time": None})
+                notifier.notify_stop_loss(f"{ex_name}/{market} 단타숏", sp["entry_price"], price)
                 logger.warning(f"[{ex_name}][{market}] 단타 숏 손절")
             return
         if price <= short_profit:
             if ex.close_short(market, sp["volume"]):
                 pnl = (sp["entry_price"] - price) / sp["entry_price"] * 100
-                notifier.notify_take_profit(f"{ex_name}/{market} 단타숏", sp["entry_price"], price)
                 sp.update({"held": False, "entry_price": 0.0, "volume": 0.0, "entry_time": None})
+                notifier.notify_take_profit(f"{ex_name}/{market} 단타숏", sp["entry_price"], price)
                 logger.info(f"[{ex_name}][{market}] 단타 숏 익절 (+{pnl:.2f}%)")
             return
 
