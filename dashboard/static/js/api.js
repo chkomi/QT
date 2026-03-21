@@ -24,4 +24,5 @@ export const api = {
   candles:      (exchange, market, interval='day', count=200) =>
     apiFetch(`/api/candles/${exchange}/${encodeURIComponent(market)}?interval=${interval}&count=${count}`),
   equityHistory: (exchange) => apiFetch(`/api/equity-history/${exchange}`),
+  logs:          (lines=200) => apiFetch(`/api/logs?lines=${lines}`),
 };

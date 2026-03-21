@@ -11,6 +11,7 @@ let _state = {
   signals:      null,
   trades:       [],
   health:       null,
+  logs:         [],
   selectedCoin: 'KRW-BTC',   // 차트 탭
   refreshCount: 0,
   isRefreshing: false,
@@ -74,6 +75,31 @@ function renderHeader(health) {
     const d = new Date(health.last_strategy_run);
     lastRun.textContent = `마지막 전략: ${d.toLocaleString('ko-KR')}`;
   }
+
+  // 거래 차단 배너
+  const banner    = $('block-banner');
+  const reasonEl  = $('block-reason');
+  const chipsEl   = $('block-chips');
+  if (!banner) return;
+
+  const isBlocked   = health?.trading_blocked;
+  const macroBlocks = health?.macro_blocks || [];
+
+  if (isBlocked || macroBlocks.length > 0) {
+    banner.style.display = '';
+    if (reasonEl) reasonEl.textContent = isBlocked
+      ? `거래 차단: ${health.blocked_reason || '알 수 없음'}`
+      : '매크로 차단 종목 있음';
+    if (chipsEl) {
+      chipsEl.innerHTML = macroBlocks.map(b => {
+        const coin = b.market.split('-')[1];
+        const short = b.reason.slice(0, 20);
+        return `<span class="block-chip" title="${b.reason}">${coin}: ${short}</span>`;
+      }).join('');
+    }
+  } else {
+    banner.style.display = 'none';
+  }
 }
 
 function setLastUpdateTime() {
@@ -93,11 +119,15 @@ function renderPortfolio(portfolio) {
   if (!exRows) return;
   exRows.innerHTML = '';
 
+  const usdtRate = portfolio.usdt_krw_rate || 1380;
+
   for (const [name, ex] of Object.entries(portfolio.exchanges || {})) {
     if (!ex.enabled) continue;
-    const val = ex.quote_currency === 'USDT'
-      ? fmtUSDT(ex.total_equity)
-      : fmtKRW(ex.total_equity);
+    const isUsdt = ex.quote_currency === 'USDT';
+    const valMain = isUsdt ? fmtUSDT(ex.total_equity) : fmtKRW(ex.total_equity);
+    const valKrw  = isUsdt
+      ? `<div class="exchange-value-sub">${fmtKRW(Math.round(ex.total_equity * usdtRate))}</div>`
+      : '';
     exRows.insertAdjacentHTML('beforeend', `
       <div class="exchange-row">
         <div>
@@ -106,8 +136,9 @@ function renderPortfolio(portfolio) {
             ${ex.paper_trading ? '페이퍼' : '실전'}
           </span>
         </div>
-        <div>
-          <span class="exchange-value">${val}</span>
+        <div style="text-align:right">
+          <span class="exchange-value">${valMain}</span>
+          ${valKrw}
         </div>
       </div>
     `);
@@ -208,79 +239,76 @@ function renderPositionCards(portfolio) {
   if (!container) return;
   container.innerHTML = '';
 
+  let cardCount = 0;
+
   for (const [exName, ex] of Object.entries(portfolio.exchanges || {})) {
     if (!ex.enabled) continue;
     const cur = ex.quote_currency;
 
-    // 현물 포지션
+    // 현물 포지션 — 보유 중인 것만 표시 (backend에서 held=true만 전송)
     for (const [mkt, pos] of Object.entries(ex.positions || {})) {
+      if (!pos.held) continue;
       const coin     = mkt.split('-')[1];
-      const held     = pos.held;
       const pnlPct   = pos.unrealized_pnl_pct;
       const pnlKey   = `unrealized_pnl_${cur.toLowerCase()}`;
       const pnlQuote = pos[pnlKey] || 0;
+      cardCount++;
 
-      let priceDisplay = fmtPrice(pos.current_price, cur);
-      let entryDisplay = held ? fmtPrice(pos.entry_price, cur) : '—';
-      let pnlDisplay   = held ? `<span class="${colorClass(pnlPct)}">${fmtPct(pnlPct)}</span>` : '—';
-
+      const pnlAmtStr = cur === 'USDT'
+        ? fmtUSDT(pnlQuote)
+        : fmtKRW(pnlQuote);
       container.insertAdjacentHTML('beforeend', `
-        <div class="position-card ${held ? 'active' : 'inactive'}">
+        <div class="position-card active">
           <div class="pos-header">
             <span class="pos-ex">${exName}</span>
             <span class="pos-mkt">${coin}</span>
-            <span class="pos-type">
-              ${held ? '<span class="badge badge-bull">롱</span>' : '<span class="badge badge-neutral">대기</span>'}
-            </span>
+            <span class="pos-type"><span class="badge badge-bull">롱</span></span>
           </div>
           <div class="pos-body">
-            ${held ? `
-              <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${entryDisplay}</span></div>
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${priceDisplay}</span></div>
-              <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(pos.volume).toFixed(6)}</span></div>
-              <div class="pos-row"><span class="pos-label">미실현</span><span class="pos-val">${pnlDisplay}</span></div>
-            ` : `
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${priceDisplay}</span></div>
-              <div class="pos-no-position">포지션 없음</div>
-            `}
+            <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${fmtPrice(pos.entry_price, cur)}</span></div>
+            <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtPrice(pos.current_price, cur)}</span></div>
+            <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(pos.volume).toFixed(6)}</span></div>
+            <div class="pos-row"><span class="pos-label">보유가치</span><span class="pos-val">${fmtPrice(pos.coin_value, cur)}</span></div>
+            <div class="pos-row"><span class="pos-label">미실현</span>
+              <span class="pos-val ${colorClass(pnlPct)}">${fmtPct(pnlPct)} <span style="font-size:10px">(${pnlAmtStr})</span></span></div>
           </div>
         </div>
       `);
     }
 
-    // OKX 선물 포지션
+    // OKX 선물 포지션 — 보유 중인 것만 표시 (backend에서 volume>0만 전송)
     for (const [mkt, fut] of Object.entries(ex.futures || {})) {
-      const coin  = mkt.split('-')[1];
-      const side  = fut.side;
-      const held  = side !== null && fut.volume > 0;
+      const side = fut.side;
+      if (!side || fut.volume <= 0) continue;
+      const coin   = mkt.split('-')[1];
       const pnlPct = fut.unrealized_pnl_pct;
+      cardCount++;
 
+      const futPnlAmt = fut.unrealized_pnl_usdt ?? 0;
       container.insertAdjacentHTML('beforeend', `
-        <div class="position-card ${held && side==='short' ? 'active-short' : held ? 'active' : 'inactive'}">
+        <div class="position-card ${side === 'short' ? 'active-short' : 'active'}">
           <div class="pos-header">
             <span class="pos-ex">${exName} 선물</span>
             <span class="pos-mkt">${coin}</span>
             <span class="pos-type">
-              ${held && side==='short' ? '<span class="badge badge-bear">숏</span>'
-              : held && side==='long'  ? '<span class="badge badge-bull">롱</span>'
-              : '<span class="badge badge-neutral">대기</span>'}
+              ${side === 'short' ? '<span class="badge badge-bear">숏</span>'
+                                 : '<span class="badge badge-bull">롱</span>'}
             </span>
           </div>
           <div class="pos-body">
-            ${held ? `
-              <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${fmtNum(fut.entry_price,2)}</span></div>
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtNum(fut.current_price,2)}</span></div>
-              <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(fut.volume).toFixed(4)}</span></div>
-              <div class="pos-row"><span class="pos-label">미실현</span>
-                <span class="pos-val ${colorClass(pnlPct)}">${fmtPct(pnlPct)}</span></div>
-            ` : `
-              <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtNum(fut.current_price,2)}</span></div>
-              <div class="pos-no-position">포지션 없음</div>
-            `}
+            <div class="pos-row"><span class="pos-label">진입가</span><span class="pos-val">${fmtNum(fut.entry_price,2)}</span></div>
+            <div class="pos-row"><span class="pos-label">현재가</span><span class="pos-val">${fmtNum(fut.current_price,2)}</span></div>
+            <div class="pos-row"><span class="pos-label">수량</span><span class="pos-val">${Number(fut.volume).toFixed(4)}</span></div>
+            <div class="pos-row"><span class="pos-label">미실현</span>
+              <span class="pos-val ${colorClass(pnlPct)}">${fmtPct(pnlPct)} <span style="font-size:10px">(${fmtUSDT(futPnlAmt)})</span></span></div>
           </div>
         </div>
       `);
     }
+  }
+
+  if (cardCount === 0) {
+    container.innerHTML = '<div class="pos-empty-state">현재 보유 포지션 없음</div>';
   }
 }
 
@@ -296,18 +324,37 @@ function initChartTabs() {
   });
 }
 
+// Upbit KRW 현물 — 시가총액 상위 20위 중 상장 16종목 (BNB·TON·MATIC·LTC 미상장)
+const UPBIT_MARKETS = [
+  'KRW-BTC','KRW-ETH','KRW-SOL','KRW-XRP','KRW-DOGE','KRW-ADA',
+  'KRW-AVAX','KRW-LINK','KRW-DOT','KRW-UNI','KRW-BCH','KRW-APT',
+  'KRW-NEAR','KRW-OP','KRW-ARB','KRW-SUI',
+];
+
 async function refreshCharts() {
   const coin     = _state.selectedCoin;
   const trades   = _state.trades;
+  const upbitSupported = UPBIT_MARKETS.includes(coin);
+
+  // Upbit 차트: SOL/XRP는 숨기고 OKX만 전체 너비로
+  const upbitPanel = $('chart-upbit');
+  const chartGrid  = upbitPanel?.closest('.chart-grid');
+  if (upbitPanel) {
+    upbitPanel.style.display = upbitSupported ? '' : 'none';
+  }
+  if (chartGrid) {
+    chartGrid.style.gridTemplateColumns = upbitSupported ? '' : '1fr';
+  }
 
   // Upbit 차트
-  try {
-    $('chart-upbit')?.classList.remove('hidden');
-    const upbitData = await api.candles('upbit', coin);
-    updateChart('chart-upbit-body', `upbit_${coin}`, upbitData,
-      trades.filter(t => t.exchange === 'upbit' && t.market === coin), false);
-    updateChartHeader('chart-upbit', 'upbit', coin, upbitData, 'KRW');
-  } catch (e) { console.error('Upbit 차트 오류:', e); }
+  if (upbitSupported) {
+    try {
+      const upbitData = await api.candles('upbit', coin);
+      updateChart('chart-upbit-body', `upbit_${coin}`, upbitData,
+        trades.filter(t => t.exchange === 'upbit' && t.market === coin), false);
+      updateChartHeader('chart-upbit', 'upbit', coin, upbitData, 'KRW');
+    } catch (e) { console.error('Upbit 차트 오류:', e); }
+  }
 
   // OKX 선물 차트
   try {
@@ -475,12 +522,69 @@ async function refreshAll(force = false) {
   }
 }
 
+// ── 봇 로그 ─────────────────────────────────────────────────────
+let _logLevelFilter = '';
+
+function initLogControls() {
+  document.querySelectorAll('.log-level-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.log-level-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _logLevelFilter = btn.dataset.level;
+      renderLogs(_state.logs || []);
+    });
+  });
+}
+
+function renderLogs(logs) {
+  const terminal = $('log-terminal');
+  if (!terminal) return;
+
+  const filtered = _logLevelFilter
+    ? logs.filter(l => l.level === _logLevelFilter)
+    : logs;
+
+  if (!filtered.length) {
+    terminal.innerHTML = '<div class="log-empty">로그 없음</div>';
+    return;
+  }
+
+  const autoScroll = $('log-auto-scroll')?.checked;
+  const wasAtBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40;
+
+  terminal.innerHTML = filtered.map(l => {
+    const shortTs  = l.ts.slice(11, 19); // HH:MM:SS
+    const shortMod = l.module.split('.').pop().slice(0, 16);
+    return `<div class="log-line level-${l.level}">` +
+      `<span class="log-ts">${shortTs}</span>` +
+      `<span class="log-level">${l.level}</span>` +
+      `<span class="log-module">${shortMod}</span>` +
+      `<span class="log-msg">${l.msg.replace(/</g,'&lt;')}</span>` +
+      `</div>`;
+  }).join('');
+
+  if (autoScroll && (wasAtBottom || _state.refreshCount <= 1)) {
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+}
+
+async function refreshLogs() {
+  try {
+    const data = await api.logs(300);
+    _state.logs = data.logs || [];
+    renderLogs(_state.logs);
+  } catch (e) { /* silent */ }
+}
+
 // ── 초기화 ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initChartTabs();
   initRefreshBtn();
   initTradeFilters();
+  initLogControls();
 
   refreshAll(true);
+  refreshLogs();
   setInterval(() => refreshAll(), REFRESH_MS);
+  setInterval(refreshLogs, 5_000);   // 로그는 5초마다 독립 갱신
 });

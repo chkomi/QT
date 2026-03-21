@@ -106,13 +106,21 @@ class OKXExchange(ExchangeBase):
 
     # ── 잔고 조회 ──────────────────────────────────────
 
+    _bal_cache: dict = {}   # {"ts": float, "val": float}
+    _BAL_TTL = 30           # 초: 30초 내 재호출 시 캐시 반환 (Rate Limit 방지)
+
     def get_balance_quote(self) -> float:
         """
         OKX 총 USDT 자산 = spot total + futures total (마진 + 미실현손익 포함)
         spot.free만 쓰면 선물 계좌에 이체된 증거금이 누락됨.
+        30초 TTL 캐시로 20종목 × 반복 호출로 인한 Rate Limit(50011) 방지.
         """
         if self.paper_trading:
             return 0.0
+        import time
+        now = time.time()
+        if now - self._bal_cache.get("ts", 0) < self._BAL_TTL:
+            return self._bal_cache["val"]
         total = 0.0
         try:
             spot_bal = self._spot.fetch_balance()
@@ -125,6 +133,7 @@ class OKXExchange(ExchangeBase):
                 total += float(fut_bal.get("USDT", {}).get("total", 0) or 0)
             except Exception as e:
                 logger.error(f"[OKX] Futures USDT 잔고 오류: {e}")
+        self._bal_cache = {"ts": now, "val": total}
         return total
 
     def get_balance_coin(self, market: str) -> float:
@@ -183,9 +192,11 @@ class OKXExchange(ExchangeBase):
                 "instId": inst_id,
                 "period": period,
             })
-            data = resp.get("data", [])
+            # resp가 dict이면 "data" 키 추출, list이면 직접 사용
+            data = resp if isinstance(resp, list) else resp.get("data", [])
             if data:
-                ratio = float(data[0].get("longRatio", 0.5))
+                item = data[0]
+                ratio = float(item.get("longRatio", 0.5) if isinstance(item, dict) else 0.5)
                 logger.info(f"[OKX] Top Trader 롱 비율 ({market}): {ratio:.1%}")
                 return ratio
         except Exception as e:

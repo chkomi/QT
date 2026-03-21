@@ -18,7 +18,25 @@ markets:
 
 # 거래소별 거래 종목 (미지정 시 markets 전체 사용)
 # OKX: 시가총액 상위 20위 (스테이블코인·래핑토큰 제외, OKX 선물 지원 종목)
+# Upbit: 시가총액 상위 20위 중 KRW 마켓 상장 종목 (BNB·TON·MATIC·LTC 미상장)
 exchange_markets:
+  upbit:
+    - KRW-BTC    # 1위
+    - KRW-ETH    # 2위
+    - KRW-SOL    # 4위
+    - KRW-XRP    # 5위
+    - KRW-DOGE   # 6위
+    - KRW-ADA    # 7위
+    - KRW-AVAX   # 8위
+    - KRW-LINK   # 9위
+    - KRW-DOT    # 10위
+    - KRW-UNI    # 13위
+    - KRW-BCH    # 15위
+    - KRW-APT    # 16위
+    - KRW-NEAR   # 17위
+    - KRW-OP     # 18위
+    - KRW-ARB    # 19위
+    - KRW-SUI    # 20위
   okx:
     - KRW-BTC    # 1위
     - KRW-ETH    # 2위
@@ -63,7 +81,7 @@ strategies:
     vp_lookback: 20              # Volume Profile 기간 (웅크웅크)
     vp_bins: 50                  # 가격 구간 수
     fib_lookback: 50             # 피보나치 스윙 탐색 기간 (웅크웅크)
-    short_consec: 2              # 숏 진입 연속 하락 봉 수 (일봉 기준)
+    short_consec: 1              # 숏 진입 연속 하락 봉 수 (일봉 기준) — Supertrend 사용 시 대체됨
     # ── 신규 지표 (백테스트로 효과 검증 후 true 전환) ──
     use_supertrend: true         # Supertrend 추세 필터 (OKX 숏 정확도↑)
     supertrend_period: 7
@@ -121,7 +139,10 @@ scalp_trading:
   stop_loss_pct: -0.012          # -1.2% 손절
   take_profit_pct: 0.020         # +2.0% 익절  (손익비 1.67:1)
   max_holding_hours: 6           # 6시간 초과 시 강제 청산
-  short_consec: 3                # 숏 진입 연속 하락 봉 수 (1H봉 기준 — 노이즈 감소)
+  short_consec: 1                # 숏 진입 연속 하락 봉 수 (1H봉 기준) — use_supertrend시 대체됨
+  use_supertrend: true           # Supertrend 방향 필터 (consec_down 대체, 1H 스캘프 숏 정확도↑)
+  supertrend_period: 7
+  supertrend_multiplier: 3.0
   daily_loss_limit_pct: -0.10   # 단타 일일 손실 한도 -10%
   # 동적 레버리지 (확신도 1~5 → 1x~max_leverage)
   max_leverage: 5                # 최대 레버리지 (확신도 5일 때 적용)

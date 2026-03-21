@@ -56,6 +56,9 @@ EQUITY_RE       = re.compile(r'^\[(?P<ex>\w+)\] 총 자산: (?P<equity>[\d,.]+) 
 STRATEGY_RUN_RE = re.compile(r'^전략 실행 \| (?P<dt>\d{4}-\d{2}-\d{2} \d{2}:\d{2})$')
 SYNC_LONG_RE    = re.compile(r'^\[(?P<ex>\w+)\] 롱 동기화 \| (?P<mkt>[\w-]+) (?P<vol>[\d.]+)개 @ (?P<avg>[\d,.]+)$')
 RISK_INIT_RE    = re.compile(r'^\[RiskManager\] 일일 초기화 \| 자본: (?P<capital>[\d,.]+)원$')
+CAPITAL_BLOCK_RE = re.compile(r'^\[RiskManager\] 투자 가능 금액 부족')
+DAILY_LIMIT_RE   = re.compile(r'거래 중단 상태|일일 손실 한도 초과|daily.*loss.*limit', re.IGNORECASE)
+MACRO_BLOCK_RE   = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 차단 \u2014 Macro: (?P<reason>.+)$')
 
 
 def _parse_ts(ts_str: str) -> datetime:
@@ -317,9 +320,10 @@ class LogParser:
         return results
 
     def get_health(self) -> dict:
-        """봇 활성 여부 판단"""
+        """봇 활성 여부 + 거래 차단 사유 판단"""
         if not self._file_exists():
-            return {"status": "no_log", "bot_running": False, "last_strategy_run": None}
+            return {"status": "no_log", "bot_running": False, "last_strategy_run": None,
+                    "trading_blocked": False, "blocked_reason": None, "macro_blocks": []}
 
         last_run = self.get_last_strategy_run()
         bot_running = False
@@ -328,8 +332,40 @@ class LogParser:
             diff_seconds = (datetime.now() - last_dt).total_seconds()
             bot_running = diff_seconds < 5400  # 90분 이내
 
+        # 최근 500줄에서 차단 사유 파싱
+        trading_blocked = False
+        blocked_reason  = None
+        macro_blocks: dict = {}  # mkt → reason (최신 1개만)
+
+        for line in _read_lines_reversed(self.log_path, max_lines=500):
+            m = BASE_RE.match(line)
+            if not m:
+                continue
+            msg = m.group("msg")
+            level = m.group("level")
+
+            if not trading_blocked and level == "WARNING":
+                if CAPITAL_BLOCK_RE.match(msg):
+                    trading_blocked = True
+                    blocked_reason = "자본 부족 (최소 주문금액 미달)"
+                elif DAILY_LIMIT_RE.search(msg):
+                    trading_blocked = True
+                    blocked_reason = "일일 손실 한도 초과"
+
+            mm = MACRO_BLOCK_RE.match(msg)
+            if mm:
+                mkt = mm.group("mkt")
+                if mkt not in macro_blocks:
+                    macro_blocks[mkt] = mm.group("reason")
+
         return {
             "status": "ok",
             "bot_running": bot_running,
             "last_strategy_run": last_run,
+            "trading_blocked": trading_blocked,
+            "blocked_reason": blocked_reason,
+            "macro_blocks": [
+                {"market": mkt, "reason": reason}
+                for mkt, reason in macro_blocks.items()
+            ],
         }

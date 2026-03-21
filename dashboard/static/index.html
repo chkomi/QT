@@ -31,6 +31,13 @@
 <!-- ── 메인 콘텐츠 ──────────────────────────────────────────── -->
 <div class="main-content">
 
+  <!-- 거래 차단 배너 (차단 시만 표시) -->
+  <div id="block-banner" class="block-banner" style="display:none">
+    <span class="block-icon">⚠</span>
+    <span class="block-main" id="block-reason"></span>
+    <div class="block-chips" id="block-chips"></div>
+  </div>
+
   <!-- 상단: 포트폴리오 + 리스크/신호 -->
   <div class="top-row">
 
@@ -86,6 +93,14 @@
       <div class="chart-tabs">
         <button class="chart-tab active" data-coin="KRW-BTC">BTC</button>
         <button class="chart-tab" data-coin="KRW-ETH">ETH</button>
+        <button class="chart-tab" data-coin="KRW-SOL">SOL</button>
+        <button class="chart-tab" data-coin="KRW-XRP">XRP</button>
+        <button class="chart-tab" data-coin="KRW-DOGE">DOGE</button>
+        <button class="chart-tab" data-coin="KRW-ADA">ADA</button>
+        <button class="chart-tab" data-coin="KRW-AVAX">AVAX</button>
+        <button class="chart-tab" data-coin="KRW-LINK">LINK</button>
+        <button class="chart-tab" data-coin="KRW-DOT">DOT</button>
+        <button class="chart-tab" data-coin="KRW-SUI">SUI</button>
       </div>
     </div>
 
@@ -207,6 +222,8 @@
           <option value="">전체 종목</option>
           <option value="KRW-BTC">BTC</option>
           <option value="KRW-ETH">ETH</option>
+          <option value="KRW-SOL">SOL</option>
+          <option value="KRW-XRP">XRP</option>
         </select>
       </div>
     </div>
@@ -228,6 +245,24 @@
           </tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- 봇 로그 -->
+  <div class="card log-section">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span class="card-title" style="margin-bottom:0">봇 로그</span>
+      <div class="log-filters">
+        <button class="log-level-btn active" data-level="">전체</button>
+        <button class="log-level-btn" data-level="WARNING">경고</button>
+        <button class="log-level-btn" data-level="ERROR">오류</button>
+      </div>
+      <label class="log-auto-scroll-label" style="margin-left:auto">
+        <input type="checkbox" id="log-auto-scroll" checked> 자동 스크롤
+      </label>
+    </div>
+    <div class="log-terminal" id="log-terminal">
+      <div class="log-empty">로그 로딩 중...</div>
     </div>
   </div>
 

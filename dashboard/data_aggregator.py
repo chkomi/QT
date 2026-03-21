@@ -31,7 +31,9 @@ ASSET_WEIGHTS  = _config["asset_weights"]
 EX_CFG         = _config["exchanges"]
 OKX_CFG        = _config.get("okx_futures", {})
 TRADING_CFG    = _config["trading"]
-OKX_MARKETS    = _config.get("exchange_markets", {}).get("okx", MARKETS)
+_EX_MARKETS    = _config.get("exchange_markets", {})
+OKX_MARKETS    = _EX_MARKETS.get("okx", MARKETS)
+UPBIT_MARKETS  = _EX_MARKETS.get("upbit", MARKETS)
 
 
 class DataAggregator:
@@ -216,32 +218,31 @@ class DataAggregator:
                     equity    = quote_bal
                     positions = {}
 
-                    spot_markets = OKX_MARKETS if ex_name == "okx" else MARKETS
-                    for market in spot_markets:
-                        try:
-                            vol   = ex.get_balance_coin(market)
-                            avg   = ex.get_avg_buy_price(market) if vol > 0 else 0.0
-                            price = ex.get_current_price(market) or 0.0
-                            coin_val   = vol * price
-                            equity    += coin_val
-                            unr_pct    = ((price - avg) / avg * 100) if avg > 0 else 0.0
-                            unr_quote  = (price - avg) * vol if avg > 0 else 0.0
-                            cur        = ex.quote_currency.lower()
-                            positions[market] = {
-                                "held":            vol > 0,
-                                "volume":          vol,
-                                "entry_price":     avg,
-                                "current_price":   price,
-                                "unrealized_pnl_pct":                round(unr_pct,   4),
-                                f"unrealized_pnl_{cur}":             round(unr_quote, 2),
-                                "coin_value":      round(coin_val, 2),
-                            }
-                        except Exception as e:
-                            logger.error(f"포지션 오류 {ex_name}/{market}: {e}")
-                            positions[market] = {
-                                "held": False, "volume": 0.0, "entry_price": 0.0,
-                                "current_price": 0.0, "unrealized_pnl_pct": 0.0,
-                            }
+                    # OKX는 선물 전용 — 스팟 코인 잔고 조회 생략 (항상 0, API 낭비)
+                    if ex_name != "okx":
+                        spot_markets = UPBIT_MARKETS if ex_name == "upbit" else MARKETS
+                        for market in spot_markets:
+                            try:
+                                vol   = ex.get_balance_coin(market)
+                                avg   = ex.get_avg_buy_price(market) if vol > 0 else 0.0
+                                price = ex.get_current_price(market) or 0.0
+                                coin_val   = vol * price
+                                equity    += coin_val
+                                unr_pct    = ((price - avg) / avg * 100) if avg > 0 else 0.0
+                                unr_quote  = (price - avg) * vol if avg > 0 else 0.0
+                                cur        = ex.quote_currency.lower()
+                                if vol > 0:   # 보유 중인 포지션만 포함
+                                    positions[market] = {
+                                        "held":            True,
+                                        "volume":          vol,
+                                        "entry_price":     avg,
+                                        "current_price":   price,
+                                        "unrealized_pnl_pct":                round(unr_pct,   4),
+                                        f"unrealized_pnl_{cur}":             round(unr_quote, 2),
+                                        "coin_value":      round(coin_val, 2),
+                                    }
+                            except Exception as e:
+                                logger.error(f"포지션 오류 {ex_name}/{market}: {e}")
 
                     ex_data = {
                         "enabled":        True,
@@ -252,37 +253,45 @@ class DataAggregator:
                         "positions":      positions,
                     }
 
-                    # OKX 선물 포지션
+                    # OKX 선물 포지션 — 보유 중인 것만 포함, 미실현 PnL을 equity에 반영
                     if ex_name == "okx":
                         from engine.okx_exchange import OKXExchange
                         if isinstance(ex, OKXExchange) and ex.use_short:
                             futures = {}
+                            futures_unrealized = 0.0
                             for market in OKX_MARKETS:
                                 try:
                                     p     = ex.get_futures_position(market)
+                                    vol   = p.get("volume", 0.0) or 0.0
+                                    side  = p.get("side")
+                                    if not side or vol <= 0:
+                                        continue   # 미보유 종목 스킵
                                     price = ex.get_current_price(market) or 0.0
                                     entry = p.get("entry_price", 0.0) or 0.0
-                                    side  = p.get("side")
                                     if side == "short" and entry > 0:
-                                        pnl_pct = (entry - price) / entry * 100
+                                        pnl_pct  = (entry - price) / entry * 100
+                                        pnl_usdt = (entry - price) * vol
                                     elif side == "long" and entry > 0:
-                                        pnl_pct = (price - entry) / entry * 100
+                                        pnl_pct  = (price - entry) / entry * 100
+                                        pnl_usdt = (price - entry) * vol
                                     else:
-                                        pnl_pct = 0.0
+                                        pnl_pct  = 0.0
+                                        pnl_usdt = 0.0
+                                    futures_unrealized += pnl_usdt
                                     futures[market] = {
-                                        "side":                p.get("side"),
-                                        "volume":              p.get("volume", 0.0),
+                                        "side":                side,
+                                        "volume":              vol,
                                         "entry_price":         entry,
                                         "current_price":       price,
                                         "unrealized_pnl_pct":  round(pnl_pct, 4),
+                                        "unrealized_pnl_usdt": round(pnl_usdt, 2),
                                     }
                                 except Exception as e:
                                     logger.error(f"OKX 선물 포지션 오류 {market}: {e}")
-                                    futures[market] = {
-                                        "side": None, "volume": 0.0, "entry_price": 0.0,
-                                        "current_price": 0.0, "unrealized_pnl_pct": 0.0,
-                                    }
+                            # 미실현 PnL을 OKX 총자산에 반영
+                            equity += futures_unrealized
                             ex_data["futures"] = futures
+                            ex_data["total_equity"] = round(equity, 2)
 
                     krw_equiv = equity * usdt_krw if ex.quote_currency == "USDT" else equity
                     result["total_krw_equiv"] += krw_equiv
@@ -335,7 +344,7 @@ class DataAggregator:
             for ex_name, ex in self._exchanges.items():
                 result[ex_name] = {}
                 strat = self._strategy_longshort if ex_name == "okx" else self._strategy_long
-                markets_to_check = OKX_MARKETS if ex_name == "okx" else MARKETS
+                markets_to_check = OKX_MARKETS if ex_name == "okx" else (UPBIT_MARKETS if ex_name == "upbit" else MARKETS)
                 for market in markets_to_check:
                     try:
                         df = self._fetch_okx_ohlcv(market, "day", 210) if ex_name == "okx" \

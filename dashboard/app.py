@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 logger     = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 LOG_PATH   = ROOT / "logs" / "trades.log"
+BOT_LOG    = ROOT / "logs" / "bot.log"
 
 # 서버 시작 전에 static 디렉토리 보장
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,3 +147,65 @@ async def equity_history(request: Request, exchange: str):
     if parser is None:
         return []
     return await asyncio.to_thread(parser.get_equity_history, exchange)
+
+
+@app.get("/api/logs")
+async def bot_logs(lines: int = Query(200)):
+    import re
+    log_path = BOT_LOG
+    if not log_path.exists():
+        return {"logs": []}
+
+    LINE_RE = re.compile(
+        r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+'
+        r' \[(?P<level>\w+)\]'
+        r' (?P<module>[\w.]+)'
+        r' \u2014 (?P<msg>.+)$'
+    )
+
+    def _read():
+        result = []
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                pos = f.tell()
+                buf = b""
+                found = 0
+                while pos > 0 and found < lines:
+                    chunk = min(8192, pos)
+                    pos -= chunk
+                    f.seek(pos)
+                    buf = f.read(chunk) + buf
+                    while found < lines:
+                        nl = buf.rfind(b"\n", 0, len(buf) - 1 if buf.endswith(b"\n") else len(buf))
+                        if nl == -1:
+                            break
+                        raw = buf[nl + 1:].decode("utf-8", errors="replace").rstrip()
+                        buf = buf[:nl + 1]
+                        if raw:
+                            m = LINE_RE.match(raw)
+                            if m:
+                                result.append({
+                                    "ts":     m.group("ts"),
+                                    "level":  m.group("level"),
+                                    "module": m.group("module"),
+                                    "msg":    m.group("msg"),
+                                })
+                            found += 1
+                if buf:
+                    raw = buf.decode("utf-8", errors="replace").rstrip()
+                    if raw:
+                        m = LINE_RE.match(raw)
+                        if m:
+                            result.append({
+                                "ts":     m.group("ts"),
+                                "level":  m.group("level"),
+                                "module": m.group("module"),
+                                "msg":    m.group("msg"),
+                            })
+        except Exception as e:
+            logger.error(f"로그 읽기 오류: {e}")
+        return list(reversed(result))
+
+    logs = await asyncio.to_thread(_read)
+    return {"logs": logs}

@@ -25,8 +25,10 @@ import yaml
 with open(ROOT / "config" / "config.yaml", encoding="utf-8") as f:
     _config = yaml.safe_load(f)
 
-MARKETS     = _config["markets"]
-OKX_MARKETS = _config.get("exchange_markets", {}).get("okx", MARKETS)
+MARKETS       = _config["markets"]
+_EX_MARKETS   = _config.get("exchange_markets", {})
+OKX_MARKETS   = _EX_MARKETS.get("okx",   MARKETS)
+UPBIT_MARKETS = _EX_MARKETS.get("upbit", MARKETS)
 
 
 def save(filename: str, data):
@@ -53,8 +55,8 @@ def export_candles_and_signals():
     except Exception as e:
         print(f"signals 실패: {e}")
 
-    # 캔들: Upbit (BTC/ETH 공개 API, 인증 불필요)
-    for market in MARKETS:
+    # 캔들: Upbit (공개 API, 인증 불필요)
+    for market in UPBIT_MARKETS:
         key = f"candles_upbit_{market}_day"
         try:
             candles = agg.get_candles("upbit", market, "day", 200)

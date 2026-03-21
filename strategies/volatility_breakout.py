@@ -247,15 +247,21 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         df.loc[long_cond, "signal"] = 1
 
         if self.use_short:
-            # 추세 팔로잉 숏 — 연속 하락 + Supertrend 하락 확인
-            consec_down = pd.Series(True, index=df.index)
-            for lag in range(self.short_consec):
-                consec_down &= df["close"].shift(lag) < df["close"].shift(lag + 1)
+            if self.use_supertrend and "supertrend_dir" in df.columns:
+                # Supertrend 하락 방향 + 당일 음봉 → consec_down 대체
+                # consec_down(연속 N봉)보다 빠르게 반응, ATR 기반으로 변동성 자동 적응
+                short_timing = (
+                    (df["supertrend_dir"] == -1)
+                    & (df["close"] < df["close"].shift(1))
+                )
+                short_cond = valid & downtrend & ema_short & short_timing & macd_short_ok
+            else:
+                # Supertrend 미사용 시 기존 연속 하락 방식
+                consec_down = pd.Series(True, index=df.index)
+                for lag in range(self.short_consec):
+                    consec_down &= df["close"].shift(lag) < df["close"].shift(lag + 1)
+                short_cond = valid & downtrend & ema_short & consec_down & macd_short_ok
 
-            short_cond = (
-                valid & downtrend & ema_short & consec_down
-                & st_short_ok & macd_short_ok
-            )
             df.loc[short_cond, "signal"] = 2
 
         # 피보나치 근접 여부 기록 (로그/디버깅용 — 신호 필터는 아님)
