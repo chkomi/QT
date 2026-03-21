@@ -17,9 +17,9 @@ let _state = {
   isRefreshing: false,
 };
 
-const REFRESH_MS   = 30_000;   // 30초
-const CHART_EVERY  = 5;        // 5 사이클 = 150초
-const EQUITY_EVERY = 10;       // 10 사이클 = 300초
+const REFRESH_MS   = 60_000;   // 60초 (매분)
+const CHART_EVERY  = 3;        // 3 사이클 = 3분
+const EQUITY_EVERY = 5;        // 5 사이클 = 5분
 
 // ── 포맷 유틸 ───────────────────────────────────────────────────
 const fmtKRW   = v  => v == null ? '—' : Number(v).toLocaleString('ko-KR') + '원';

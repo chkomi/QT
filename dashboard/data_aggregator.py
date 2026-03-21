@@ -312,17 +312,43 @@ class DataAggregator:
                     equity = ex.get_balance_quote()
                     sl_prices = {}
                     tp_prices = {}
-                    for market in MARKETS:
-                        vol = ex.get_balance_coin(market)
-                        price = ex.get_current_price(market) or 0.0
-                        equity += vol * price
-                        avg = ex.get_avg_buy_price(market) if vol > 0 else 0.0
-                        if avg > 0:
-                            sl_prices[market] = round(avg * (1 + TRADING_CFG["stop_loss_pct"]),  0)
-                            tp_prices[market] = round(avg * (1 + TRADING_CFG["take_profit_pct"]), 0)
-                        else:
-                            sl_prices[market] = 0.0
-                            tp_prices[market] = 0.0
+
+                    if ex_name == "okx":
+                        # OKX 선물: 코인 잔고 없음 — 미실현 PnL만 반영
+                        from engine.okx_exchange import OKXExchange
+                        if isinstance(ex, OKXExchange) and ex.use_short:
+                            for market in OKX_MARKETS:
+                                try:
+                                    p     = ex.get_futures_position(market)
+                                    vol   = p.get("volume", 0.0) or 0.0
+                                    side  = p.get("side")
+                                    if not side or vol <= 0:
+                                        continue
+                                    price = ex.get_current_price(market) or 0.0
+                                    entry = p.get("entry_price", 0.0) or 0.0
+                                    if side == "short" and entry > 0:
+                                        equity += (entry - price) * vol
+                                    elif side == "long" and entry > 0:
+                                        equity += (price - entry) * vol
+                                except Exception:
+                                    pass
+                    else:
+                        # 현물 거래소: 보유 코인 평가액 합산
+                        spot_markets = UPBIT_MARKETS if ex_name == "upbit" else MARKETS
+                        for market in spot_markets:
+                            try:
+                                vol   = ex.get_balance_coin(market)
+                                price = ex.get_current_price(market) or 0.0
+                                equity += vol * price
+                                avg = ex.get_avg_buy_price(market) if vol > 0 else 0.0
+                                if avg > 0:
+                                    sl_prices[market] = round(avg * (1 + TRADING_CFG["stop_loss_pct"]),  0)
+                                    tp_prices[market] = round(avg * (1 + TRADING_CFG["take_profit_pct"]), 0)
+                                else:
+                                    sl_prices[market] = 0.0
+                                    tp_prices[market] = 0.0
+                            except Exception:
+                                pass
 
                     result[ex_name] = {
                         "current_equity":       round(equity, 2),
