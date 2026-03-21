@@ -566,10 +566,11 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, e
         if _check_volume_exit_warning(signal_df):
             logger.warning(f"[{ex_name}][{market}] [VolumeExit] 거래량 저하 지속, 청산 고려")
 
-    latest  = signal_df.iloc[-1]
-    signal  = latest.get("signal", 0)
-    ma200   = latest.get("ma200", 0)
-    trend   = "▲상승" if price > ma200 else "▼하락"
+    latest     = signal_df.iloc[-1]
+    signal     = latest.get("signal", 0)
+    ma200      = latest.get("ma200", 0)
+    trend      = "▲상승" if price > ma200 else "▼하락"
+    sw_confidence = int(latest.get("confidence", 1))   # 스윙 전략 확신도 (1~5)
 
     # ATR 기반 동적 SL/TP 추출 (없으면 None → RiskManager 비율 기준 사용)
     import math as _math
@@ -631,14 +632,37 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, e
     # ── 숏 진입 (signal=2, OKX 전용) ─────────────────
     elif signal == 2 and ex_name == "okx" and not sp["held"]:
         if invest > 0 and isinstance(ex, OKXExchange):
-            if ex.open_short(market, invest, leverage=1):
+            # 확신도에 따라 레버리지 동적화: 1→1x, 2~3→2x, 4~5→3x (최대 3x)
+            sw_lev = 1 if sw_confidence <= 1 else (2 if sw_confidence <= 3 else 3)
+            if ex.open_short(market, invest, leverage=sw_lev):
                 vol = invest / price
                 sp.update({
                     "held": True, "entry_price": price, "volume": vol,
                     "atr_sl": atr_sl_short, "atr_tp": atr_tp_short,
                 })
-                notifier.notify_buy(f"{ex_name}/{market} 스윙숏↓", price, invest, currency="USDT")
-                logger.info(f"[{ex_name}][{market}] 스윙 숏 진입 | {invest:,.2f} USDT")
+                notifier.notify_buy(f"{ex_name}/{market} 스윙숏↓ {sw_lev}x", price, invest, currency="USDT")
+                logger.info(f"[{ex_name}][{market}] 스윙 숏 진입 | {invest:,.2f} USDT | {sw_lev}x (확신도 {sw_confidence}/5)")
+
+    # ── 업비트 RSI 과매도 반등 진입 (signal=0 이어도 허용) ─────────────
+    # 하락장(MA200 하향)에서도 RSI<30 + 양봉 확인 시 소규모(50%) 반등 롱
+    elif ex_name != "okx" and not lp["held"] and signal == 0:
+        rsi_val    = float(latest.get("rsi", 50) or 50)
+        last_close = float(df.iloc[-1]["close"])
+        last_open  = float(df.iloc[-1]["open"])
+        if rsi_val < 30 and last_close > last_open:
+            invest_rsi = rm.calc_position_size(cash * weight * 0.5, price)
+            if invest_rsi > 0 and ex.buy_market_order(market, invest_rsi):
+                vol = invest_rsi / price
+                lp.update({
+                    "held": True, "entry_price": price, "volume": vol,
+                    "atr_sl": atr_sl_long, "atr_tp": atr_tp_long,
+                })
+                cur = ex.quote_currency
+                notifier.notify_buy(f"{ex_name}/{market} RSI반등롱↑", price, invest_rsi, currency=cur)
+                logger.info(
+                    f"[{ex_name}][{market}] RSI반등롱 진입 | RSI={rsi_val:.1f} | "
+                    f"{invest_rsi:,.0f} {cur}"
+                )
 
     # ── 롱 청산 (signal=-1) ───────────────────────────
     elif signal == -1 and lp["held"]:

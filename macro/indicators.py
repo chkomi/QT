@@ -67,8 +67,8 @@ def calc_macro_signal(
                 # 탐욕 구간 → 숏 기회 (과열 조정 임박)
                 delta += 1
                 reasons.append(f"FGI탐욕({v})+1")
-            elif v <= 20:
-                # 극도 공포 → 추가 하락 제한적 → 숏 진입 차단
+            elif v <= 10:
+                # 극도 공포 최심화 구간에서만 차단 (≤10), 10~20 구간은 하락 지속 가능
                 blocked = True
                 reasons.append(f"FGI극도공포({v}) 숏차단")
 
