@@ -1001,11 +1001,150 @@ def send_daily_report():
     notifier.send("\n".join(lines))
 
 
+def send_periodic_report():
+    """4시간마다 전송하는 현황 리포트 + 개선 제안"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # ── 1. 매크로 ──────────────────────────────────────
+    fgi_val, fgi_cls, dom = None, None, None
+    if _MACRO_ENABLED:
+        try:
+            fgi_data = fetch_fear_greed()
+            if fgi_data:
+                fgi_val = int(fgi_data["value"])
+                fgi_cls = fgi_data["classification"]
+            dom_data = fetch_btc_dominance()
+            if dom_data:
+                dom = float(dom_data)
+        except Exception:
+            pass
+
+    # ── 2. 포지션 수집 ─────────────────────────────────
+    pos_lines = []
+    total_open = 0
+    for ex_name, ex in EXCHANGES.items():
+        for market in get_markets(ex_name):
+            p = ex.get_current_price(market)
+            if not p:
+                continue
+            lp  = long_positions[ex_name][market]
+            sp  = short_positions[ex_name][market]
+            slp = scalp_long_positions.get(ex_name, {}).get(market, {})
+            ssp = scalp_short_positions.get(ex_name, {}).get(market, {})
+
+            if lp["held"] and lp["entry_price"] > 0:
+                pnl = (p - lp["entry_price"]) / lp["entry_price"] * 100
+                em  = "🟢" if pnl >= 0 else "🔴"
+                pos_lines.append(f"  {em} {market} 스윙롱 {pnl:+.2f}% (진입 {lp['entry_price']:,.2f})")
+                total_open += 1
+            if sp["held"] and sp["entry_price"] > 0:
+                pnl = (sp["entry_price"] - p) / sp["entry_price"] * 100
+                em  = "🟢" if pnl >= 0 else "🔴"
+                pos_lines.append(f"  {em} {market} 스윙숏 {pnl:+.2f}% (진입 {sp['entry_price']:,.2f})")
+                total_open += 1
+            if slp.get("held") and slp.get("entry_price", 0) > 0:
+                pnl = (p - slp["entry_price"]) / slp["entry_price"] * 100
+                h_str = ""
+                if slp.get("entry_time"):
+                    h = (datetime.now() - slp["entry_time"]).total_seconds() / 3600
+                    h_str = f" {h:.1f}H"
+                em = "🟢" if pnl >= 0 else "🔴"
+                pos_lines.append(f"  {em} {market} 단타롱{h_str} {pnl:+.2f}%")
+                total_open += 1
+            if ssp.get("held") and ssp.get("entry_price", 0) > 0:
+                pnl = (ssp["entry_price"] - p) / ssp["entry_price"] * 100
+                h_str = ""
+                if ssp.get("entry_time"):
+                    h = (datetime.now() - ssp["entry_time"]).total_seconds() / 3600
+                    h_str = f" {h:.1f}H"
+                em = "🟢" if pnl >= 0 else "🔴"
+                pos_lines.append(f"  {em} {market} 단타숏{h_str} {pnl:+.2f}%")
+                total_open += 1
+
+    # ── 3. 자산 ────────────────────────────────────────
+    equity_lines = []
+    for ex_name, ex in EXCHANGES.items():
+        eq = calc_total_equity(ex_name)
+        equity_lines.append(f"  {ex_name}: {eq:,.2f} {ex.quote_currency}")
+
+    # ── 4. 개선 제안 (현황 기반 동적 생성) ──────────────
+    suggestions = []
+    if fgi_val is not None:
+        if fgi_val <= 15:
+            suggestions.append("📌 FGI 극단공포 — 반등 포지션 기회 주시")
+        elif fgi_val <= 30:
+            suggestions.append("📌 FGI 공포 — 스윙숏/RSI반등 전략 유효")
+        elif fgi_val >= 75:
+            suggestions.append("📌 FGI 탐욕 과열 — 신규 롱 비중 축소 고려")
+
+    if dom is not None:
+        if dom >= 58:
+            suggestions.append("📌 BTC도미넌스 높음 — 알트 진입 신중 필요")
+        elif dom <= 42:
+            suggestions.append("📌 BTC도미넌스 낮음 — 알트코인 모멘텀 활용 가능")
+
+    if total_open == 0:
+        suggestions.append("📌 보유 포지션 없음 — 신호 대기 중 (정상)")
+    elif total_open >= 5:
+        suggestions.append(f"📌 동시 포지션 {total_open}개 — 리스크 분산 점검 권장")
+
+    # 하락장 지속 여부 판단
+    downtrend_count = 0
+    for ex_name, ex in EXCHANGES.items():
+        for market in get_markets(ex_name):
+            try:
+                p = ex.get_current_price(market)
+                df_sw = ex.fetch_ohlcv(market, interval="day", count=205)
+                if df_sw is not None and len(df_sw) >= 200 and p:
+                    ma200 = df_sw["close"].rolling(200).mean().iloc[-1]
+                    if p < ma200:
+                        downtrend_count += 1
+            except Exception:
+                pass
+        break  # upbit만 빠르게 체크
+
+    total_mkts = len(get_markets(list(EXCHANGES.keys())[0]))
+    if total_mkts > 0:
+        down_ratio = downtrend_count / total_mkts
+        if down_ratio >= 0.8:
+            suggestions.append(f"📌 전체 {int(down_ratio*100)}% 하락장 — 현금 비중 유지 전략 권장")
+        elif down_ratio <= 0.3:
+            suggestions.append(f"📌 전체 {int((1-down_ratio)*100)}% 상승 추세 — 롱 진입 기회 확대")
+
+    if not suggestions:
+        suggestions.append("📌 현재 전략 정상 작동 중")
+
+    # ── 5. 메시지 조립 ─────────────────────────────────
+    lines = [f"📡 <b>정기 현황 리포트</b>  {now_str}"]
+
+    if fgi_val is not None or dom is not None:
+        macro_info = []
+        if fgi_val is not None:
+            macro_info.append(f"공포탐욕: {fgi_val} ({fgi_cls})")
+        if dom is not None:
+            macro_info.append(f"BTC도미: {dom:.1f}%")
+        lines.append("\n🌐 <b>매크로</b>\n  " + " | ".join(macro_info))
+
+    if equity_lines:
+        lines.append("\n💰 <b>자산</b>\n" + "\n".join(equity_lines))
+
+    if pos_lines:
+        lines.append(f"\n📊 <b>포지션 ({total_open}개)</b>\n" + "\n".join(pos_lines))
+    else:
+        lines.append("\n📊 <b>포지션</b>  없음 (현금 대기)")
+
+    lines.append("\n💡 <b>개선 제안</b>\n" + "\n".join(suggestions))
+
+    notifier.send("\n".join(lines))
+    logger.info(f"[정기 리포트] 전송 완료 | 포지션 {total_open}개")
+
+
 # ── 스케줄 ────────────────────────────────────────────
 schedule.every().hour.at(":00").do(run_strategy)            # 스윙: 매시 정각 (일봉)
 schedule.every().minute.do(run_price_monitor)               # Tier1: 매분 SL/TP 체크
 schedule.every(5).minutes.do(run_scalp_strategy_safe)       # 단타: 5분마다 신호+진입
 schedule.every().day.at("23:00").do(send_daily_report)
+schedule.every(4).hours.do(send_periodic_report)            # 4시간 정기 현황+개선 제안
 
 
 def main():
