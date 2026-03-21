@@ -66,12 +66,19 @@ class TelegramNotifier:
 
     # ── 편의 메서드 ────────────────────────────────────────
 
-    def notify_buy(self, market: str, price: float, amount: float):
+    def notify_buy(self, market: str, price: float, amount: float, currency: str = "KRW"):
+        is_usdt = currency.upper() == "USDT"
+        if is_usdt:
+            price_str  = f"${price:,.4f} USDT"
+            amount_str = f"${amount:,.2f} USDT"
+        else:
+            price_str  = f"{price:,.0f}원"
+            amount_str = f"{amount:,.0f}원"
         msg = (
-            f"🟢 <b>매수 체결</b>\n"
+            f"🟢 <b>진입 체결</b>\n"
             f"종목: {market}\n"
-            f"가격: {price:,.0f}원\n"
-            f"금액: {amount:,.0f}원\n"
+            f"가격: {price_str}\n"
+            f"<b>투자금액: {amount_str}</b>\n"
             f"시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         self.send(msg)

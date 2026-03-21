@@ -167,11 +167,12 @@ class OKXExchange(ExchangeBase):
                         "side": p["side"],
                         "volume": contracts,
                         "entry_price": float(p.get("entryPrice", 0) or 0),
+                        "error": False,
                     }
-            return {"side": None, "volume": 0.0, "entry_price": 0.0}
+            return {"side": None, "volume": 0.0, "entry_price": 0.0, "error": False}
         except Exception as e:
             logger.error(f"[OKX] 포지션 조회 오류: {e}")
-            return {"side": None, "volume": 0.0, "entry_price": 0.0}
+            return {"side": None, "volume": 0.0, "entry_price": 0.0, "error": True}
 
     def _to_inst_id(self, ccxt_futures_symbol: str) -> str:
         """ccxt 선물 심볼 → OKX instId (BTC/USDT:USDT → BTC-USDT-SWAP)"""

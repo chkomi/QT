@@ -277,6 +277,10 @@ def sync_positions(ex_name: str):
         if isinstance(ex, OKXExchange):
             for market in get_markets(ex_name):
                 p = ex.get_futures_position(market)
+                if p.get("error"):
+                    # API 오류 → 현재 메모리 상태 유지 (잘못된 리셋 방지)
+                    logger.warning(f"[{ex_name}] 포지션 조회 실패 — 메모리 유지 | {market}")
+                    continue
                 if p["side"] == "long" and p["volume"] > 0:
                     long_positions[ex_name][market].update(
                         {"held": True, "entry_price": p["entry_price"], "volume": p["volume"]}
@@ -288,7 +292,7 @@ def sync_positions(ex_name: str):
                     )
                     logger.info(f"[{ex_name}] 선물숏 동기화 | {market} {p['volume']:.6f}개 @ {p['entry_price']:,.2f}")
                 else:
-                    # 포지션 없으면 메모리도 리셋 (불일치 방지)
+                    # 포지션 없음이 확인된 경우만 메모리 리셋
                     prev_long  = long_positions[ex_name][market]["held"]
                     prev_short = short_positions[ex_name][market]["held"]
                     if prev_long or prev_short:
@@ -620,8 +624,9 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, e
                 "atr_sl": atr_sl_long, "atr_tp": atr_tp_long,
             })
             tag = "선물롱" if ex_name == "okx" else "현물롱"
-            notifier.notify_buy(f"{ex_name}/{market} {tag}", price, invest)
-            logger.info(f"[{ex_name}][{market}] {tag} 진입 | {invest:,.2f} {ex.quote_currency}")
+            cur = ex.quote_currency
+            notifier.notify_buy(f"{ex_name}/{market} {tag}", price, invest, currency=cur)
+            logger.info(f"[{ex_name}][{market}] {tag} 진입 | {invest:,.2f} {cur}")
 
     # ── 숏 진입 (signal=2, OKX 전용) ─────────────────
     elif signal == 2 and ex_name == "okx" and not sp["held"]:
@@ -632,7 +637,7 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, e
                     "held": True, "entry_price": price, "volume": vol,
                     "atr_sl": atr_sl_short, "atr_tp": atr_tp_short,
                 })
-                notifier.notify_buy(f"{ex_name}/{market} 스윙숏↓", price, invest)
+                notifier.notify_buy(f"{ex_name}/{market} 스윙숏↓", price, invest, currency="USDT")
                 logger.info(f"[{ex_name}][{market}] 스윙 숏 진입 | {invest:,.2f} USDT")
 
     # ── 롱 청산 (signal=-1) ───────────────────────────
@@ -844,7 +849,7 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None
                 vol = invest / price
                 lp.update({"held": True, "entry_price": price, "volume": vol,
                             "entry_time": datetime.now(), "leverage": leverage})
-                notifier.notify_buy(f"{ex_name}/{market} 단타롱 {leverage}x", price, invest)
+                notifier.notify_buy(f"{ex_name}/{market} 단타롱 {leverage}x", price, invest, currency="USDT")
                 logger.info(f"[{ex_name}][{market}] 단타 롱 진입 | {invest:,.2f} USDT | {leverage}x (확신도 {confidence}/5)")
 
     # ── 단타 숏 진입 (선물, 하락장 전용 + 스윙숏 미보유) ──
@@ -857,7 +862,7 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None
                 vol = invest / price
                 sp.update({"held": True, "entry_price": price, "volume": vol,
                             "entry_time": datetime.now(), "leverage": leverage})
-                notifier.notify_buy(f"{ex_name}/{market} 단타숏↓ {leverage}x", price, invest)
+                notifier.notify_buy(f"{ex_name}/{market} 단타숏↓ {leverage}x", price, invest, currency="USDT")
                 logger.info(f"[{ex_name}][{market}] 단타 숏 진입 | {invest:,.2f} USDT | {leverage}x (확신도 {confidence}/5)")
 
 
