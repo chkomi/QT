@@ -399,3 +399,173 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         )
 
         return df.dropna(subset=["prev_range"])
+
+    # ── Multi-Timeframe v2 확장 ───────────────────────────────────
+
+    @staticmethod
+    def calc_bias(df: pd.DataFrame, ma_period: int = 200) -> tuple:
+        """
+        현재 DataFrame의 추세 방향과 강도를 반환.
+        상위 타임프레임에서 호출되어 하위 TF의 confluence에 기여.
+
+        Returns
+        -------
+        (direction: str, strength: int)
+            direction: "bull" | "bear" | "neutral"
+            strength:  0 ~ 3 (confluence 점수 기여분)
+        """
+        if df.empty or len(df) < ma_period:
+            return ("neutral", 0)
+
+        latest = df.iloc[-1]
+        close = float(latest["close"])
+
+        # MA200 계산 (이미 있으면 재활용)
+        if "ma200" in df.columns:
+            ma = float(df["ma200"].iloc[-1])
+        else:
+            ma = float(df["close"].rolling(ma_period).mean().iloc[-1])
+
+        # EMA 계산 (이미 있으면 재활용)
+        if "ema_20" in df.columns and "ema_55" in df.columns:
+            ema20 = float(latest["ema_20"])
+            ema55 = float(latest["ema_55"])
+        else:
+            ema20 = float(df["close"].ewm(span=20).mean().iloc[-1])
+            ema55 = float(df["close"].ewm(span=55).mean().iloc[-1])
+
+        # Supertrend (있으면 사용)
+        st_dir = int(latest.get("supertrend_dir", 0)) if "supertrend_dir" in df.columns else 0
+
+        # 방향 판단 (다수결)
+        bull_votes = 0
+        bear_votes = 0
+
+        if close > ma:
+            bull_votes += 1
+        elif close < ma:
+            bear_votes += 1
+
+        if ema20 > ema55:
+            bull_votes += 1
+        elif ema20 < ema55:
+            bear_votes += 1
+
+        if st_dir == 1:
+            bull_votes += 1
+        elif st_dir == -1:
+            bear_votes += 1
+
+        # 방향 + 강도
+        if bull_votes >= 2:
+            direction = "bull"
+            strength = bull_votes  # 2 또는 3
+        elif bear_votes >= 2:
+            direction = "bear"
+            strength = bear_votes
+        else:
+            direction = "neutral"
+            strength = 0
+
+        return (direction, strength)
+
+    def generate_signals_v2(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        v2: MA200 hard gate 제거. 모든 방향 신호 생성.
+        추세 일치 여부는 caller(tf_coordinator)가 confluence로 반영.
+        """
+        df = df.copy()
+
+        # 지표 계산 (기존과 동일)
+        df["ma200"] = df["close"].rolling(self.ma_period).mean()
+        df = calc_multi_ema(df, periods=[20, 55, 100, 200])
+        df["prev_range"] = df["high"].shift(1) - df["low"].shift(1)
+        df["target_long"] = df["open"] + df["prev_range"] * self.k
+        df["target_short"] = df["open"] - df["prev_range"] * self.k
+        df["vol_surge"] = volume_surge(df, self.volume_lookback, self.volume_multiplier)
+
+        vp_df = calc_volume_profile(df, self.vp_lookback, self.vp_bins)
+        df["vp_poc"] = vp_df["poc"]
+        df["vp_vah"] = vp_df["vah"]
+        df["vp_val"] = vp_df["val"]
+
+        fib_df = calc_fibonacci(df, self.fib_lookback)
+        for col in fib_df.columns:
+            df[col] = fib_df[col]
+
+        if self.use_supertrend or self.use_atr_sl:
+            df = calc_atr(df, self.atr_period)
+        if self.use_supertrend:
+            df = calc_supertrend(df, self.supertrend_period, self.supertrend_mult)
+        if self.use_macd_filter:
+            df = calc_macd(df)
+        if self.use_bb_squeeze:
+            df = calc_bollinger_bands(df)
+        if self.use_rsi_div:
+            df = detect_rsi_divergence(df)
+        if self.use_atr_sl and "atr" in df.columns:
+            df["atr_sl_long"] = df["close"] - df["atr"] * self.atr_sl_mult
+            df["atr_tp_long"] = df["close"] + df["atr"] * self.atr_tp_mult
+            df["atr_sl_short"] = df["close"] + df["atr"] * self.atr_sl_mult
+            df["atr_tp_short"] = df["close"] - df["atr"] * self.atr_tp_mult
+
+        # 필터 조건 (v2: MA200 gate 제거)
+        valid = df["prev_range"].notna() & (df["prev_range"] > 0)
+        ema_long = ema_aligned_long(df)
+        ema_short = ema_aligned_short(df)
+        vol_ok = df["vol_surge"]
+        vp_long_ok = df["close"] >= df["vp_val"].fillna(0)
+        long_breakout = (df["high"] >= df["target_long"]) & (df["open"] < df["target_long"])
+
+        st_long_ok = df["supertrend_dir"] == 1 if self.use_supertrend else pd.Series(True, index=df.index)
+
+        if self.use_macd_filter and "macd_hist" in df.columns:
+            macd_long_ok = df["macd_hist"] > 0
+            macd_short_ok = df["macd_hist"] < 0
+        else:
+            macd_long_ok = pd.Series(True, index=df.index)
+            macd_short_ok = pd.Series(True, index=df.index)
+
+        # 신호 생성 — MA200/downtrend gate 없음
+        df["signal"] = 0
+
+        # 롱: EMA 정렬 + 거래량 + VP + VB돌파 + Supertrend + MACD
+        long_cond = valid & ema_long & vol_ok & vp_long_ok & long_breakout & st_long_ok & macd_long_ok
+        df.loc[long_cond, "signal"] = 1
+
+        # 숏: EMA 역정렬 + Supertrend/consec + MACD
+        if self.use_short:
+            if self.use_supertrend and "supertrend_dir" in df.columns:
+                short_timing = (df["supertrend_dir"] == -1) & (df["close"] < df["close"].shift(1))
+                short_cond = valid & ema_short & short_timing & macd_short_ok
+            else:
+                consec_down = pd.Series(True, index=df.index)
+                for lag in range(self.short_consec):
+                    consec_down &= df["close"].shift(lag) < df["close"].shift(lag + 1)
+                short_cond = valid & ema_short & consec_down & macd_short_ok
+            df.loc[short_cond, "signal"] = 2
+
+        # 확신도 (기존 로직 재활용 — signal mask 기반)
+        confidence = pd.Series(1, index=df.index)
+        signal_mask = df["signal"].isin([1, 2])
+        avg_vol = df["volume"].rolling(self.volume_lookback).mean()
+        confidence += (signal_mask & (df["signal"] == 1) & (df["volume"] > avg_vol * self.volume_multiplier * 2)).astype(int)
+        if "fib_near" not in df.columns and self.fib_bonus:
+            fib_cols = [c for c in df.columns if c.startswith("fib_")]
+            df["fib_near"] = df.apply(lambda row: near_fib_level(row["close"], {c: row[c] for c in fib_cols}), axis=1)
+        if "fib_near" in df.columns:
+            confidence += df["fib_near"].astype(int)
+        if "ema_20" in df.columns and "ema_55" in df.columns:
+            ema_gap = (df["ema_20"] - df["ema_55"]).abs() / df["ema_55"]
+            confidence += (ema_gap > 0.01).astype(int)
+        if self.use_rsi_div and "rsi_bull_div" in df.columns:
+            confidence += (signal_mask & (df["signal"] == 1) & df["rsi_bull_div"]).astype(int)
+        if self.use_rsi_div and "rsi_bear_div" in df.columns:
+            confidence += (signal_mask & (df["signal"] == 2) & df["rsi_bear_div"]).astype(int)
+        if self.use_bb_squeeze and "bb_width" in df.columns:
+            bb_avg = df["bb_width"].rolling(20).mean()
+            squeeze = df["bb_width"] < bb_avg * 0.5
+            confidence += (signal_mask & squeeze).astype(int)
+
+        df["confidence"] = confidence.clip(1, 5)
+        return df.dropna(subset=["prev_range"])

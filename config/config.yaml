@@ -16,9 +16,8 @@ markets:
   - KRW-BTC
   - KRW-ETH
 
-# 거래소별 거래 종목 (미지정 시 markets 전체 사용)
-# OKX: 시가총액 상위 20위 (스테이블코인·래핑토큰 제외, OKX 선물 지원 종목)
-# Upbit: 시가총액 상위 20위 중 KRW 마켓 상장 종목 (BNB·TON·MATIC·LTC 미상장)
+# 거래소별 거래 종목 — 8종목 집중 (자본 분산 최소화)
+# 시가총액 상위 + 유동성 풍부 + OKX 선물 지원 종목
 exchange_markets:
   upbit:
     - KRW-BTC    # 1위
@@ -26,16 +25,8 @@ exchange_markets:
     - KRW-SOL    # 4위
     - KRW-XRP    # 5위
     - KRW-DOGE   # 6위
-    - KRW-ADA    # 7위
-    - KRW-AVAX   # 8위
     - KRW-LINK   # 9위
-    - KRW-DOT    # 10위
-    - KRW-UNI    # 13위
-    - KRW-BCH    # 15위
-    - KRW-APT    # 16위
-    - KRW-NEAR   # 17위
-    - KRW-OP     # 18위
-    - KRW-ARB    # 19위
+    - KRW-AVAX   # 8위
     - KRW-SUI    # 20위
   okx:
     - KRW-BTC    # 1위
@@ -44,23 +35,11 @@ exchange_markets:
     - KRW-SOL    # 4위
     - KRW-XRP    # 5위
     - KRW-DOGE   # 6위
-    - KRW-ADA    # 7위
-    - KRW-AVAX   # 8위
     - KRW-LINK   # 9위
-    - KRW-DOT    # 10위
-    - KRW-TON    # 11위
-    - KRW-MATIC  # 12위 (POL)
-    - KRW-UNI    # 13위
-    - KRW-LTC    # 14위
-    - KRW-BCH    # 15위
-    - KRW-APT    # 16위
-    - KRW-NEAR   # 17위
-    - KRW-OP     # 18위
-    - KRW-ARB    # 19위
     - KRW-SUI    # 20위
 
 # asset_weights: CoinGecko 시가총액 기반 동적 계산으로 대체 (매시 갱신)
-# 폴백(API 실패 시): 동일 비중 1/20 = 5% 씩
+# 폴백(API 실패 시): 동일 비중 1/8 = 12.5% 씩
 asset_weights: {}  # runtime에 refresh_asset_weights()로 채워짐
 
 trading:
@@ -86,7 +65,7 @@ strategies:
     use_supertrend: true         # Supertrend 추세 필터 (OKX 숏 정확도↑)
     supertrend_period: 7
     supertrend_multiplier: 3.0
-    use_macd_filter: true        # MACD 방향 필터 — 백테스트 결과: 수익률 +78.6%, 샤프 0.515 (최우수)
+    use_macd_filter: false        # MACD 방향 필터 OFF — 하락장 숏 진입 기회 확대 (4AND→3AND)
     use_atr_sl: true             # ATR 동적 SL/TP (고정 % 대체)
     atr_period: 14
     atr_sl_multiplier: 1.5       # SL = 진입가 ± ATR × 1.5
@@ -129,9 +108,9 @@ scalp_trading:
   timeframe: minute60            # 1시간봉
   total_capital_ratio: 0.30      # OKX 잔고의 30% = 전체 단타 자본 (종목별 = 30% × 시가총액가중치)
   capital_ratio: 0.075           # 하위 호환용 (total_capital_ratio 없을 때 폴백)
-  k: 0.35                        # 돌파 민감도 — 백테스트 결과 반영 (스윙 0.4보다 타이트)
+  k: 0.25                        # 돌파 민감도 ↓ — 진입 기회 확대 (기존 0.35)
   ma_period: 50                  # 50H ≈ 2일 단기 추세
-  volume_multiplier: 2.0         # 거래량 필터 (스윙 1.5x보다 엄격)
+  volume_multiplier: 1.2         # 거래량 필터 ↓ — 기존 2.0에서 완화 (진입 빈도↑)
   volume_lookback: 20
   vp_lookback: 20
   vp_bins: 30
@@ -196,3 +175,149 @@ macro_factors:
     OP: optimism
     ARB: arbitrum
     SUI: sui
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Multi-Timeframe Trading System (v2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Confluence Score 가중치 및 임계값 ──────────────────────────────────────
+confluence:
+  daily_bias_weight: 3        # 일봉 방향 일치 시 최대 +3
+  tactical_4h_weight: 2       # 4H 방향 확인 시 최대 +2
+  entry_signal_weight: 2      # 진입 TF 신호 강도 (confidence 1-5 → 0-2)
+  macro_weight: 1             # 매크로 환경 (FGI, 펀딩비 등)
+  top_trader_weight: 1        # Top Trader 정렬
+  volume_weight: 1            # 거래량 서지 확인
+  min_score: 3                # 최소 진입 점수 (초기값, 실전 후 조정)
+  # confluence → 포지션 크기 배수 (점수: 배수)
+  score_to_size:
+    3: 0.50                   # 3-4점: 기본의 50%
+    5: 0.75                   # 5-6점: 기본의 75%
+    7: 1.00                   # 7+점: 풀 사이즈
+  # confluence → 레버리지 (점수: 배수)
+  score_to_leverage:
+    3: 1
+    5: 2
+    7: 3
+    9: 5
+
+# ── 자본 배분 (공유 풀 방식) ──────────────────────────────────────────────
+capital_allocation:
+  mode: shared_pool            # shared_pool: 전체 자본 공유 + 포지션 수 제한
+  max_total_positions: 8       # 전체 동시 포지션 한도
+  max_per_asset_pct: 0.25      # 종목당 최대 노출 25%
+  max_single_position_pct: 0.15  # 단일 포지션 최대 크기 15%
+  same_direction_limit_pct: 0.80  # 80% 이상 같은 방향이면 추가 차단
+  # Tier별 동시 포지션 상한
+  tier_position_limits:
+    daily: 3
+    4h: 3
+    1h: 3
+    15m: 2
+  # 포지션 크기 = equity × asset_weight × tier_size_pct × confluence_mult
+  tier_size_pct:
+    daily: 0.15
+    4h: 0.12
+    1h: 0.10
+    15m: 0.08
+
+# ── Tier별 리스크 파라미터 ────────────────────────────────────────────────
+risk_tiers:
+  daily:
+    atr_sl_mult: 2.0           # SL = ATR × 2.0
+    atr_tp_mult: 4.0           # TP = ATR × 4.0 (2:1 손익비)
+    atr_period: 14
+    max_leverage: 3
+    max_holding_days: 30
+    daily_loss_limit_pct: -0.15
+  4h:
+    atr_sl_mult: 1.5
+    atr_tp_mult: 3.0           # 2:1 손익비
+    atr_period: 14
+    max_leverage: 3
+    max_holding_days: 7
+    daily_loss_limit_pct: -0.12
+  1h:
+    atr_sl_mult: 1.2
+    atr_tp_mult: 2.4           # 2:1 손익비
+    atr_period: 14
+    max_leverage: 5
+    max_holding_hours: 24
+    daily_loss_limit_pct: -0.10
+  15m:
+    atr_sl_mult: 0.8
+    atr_tp_mult: 1.2           # 1.5:1 손익비 (평균회귀)
+    atr_period: 14
+    max_leverage: 3
+    max_holding_hours: 4
+    daily_loss_limit_pct: -0.08
+
+# ── Tier별 전략 파라미터 ──────────────────────────────────────────────────
+timeframe_strategies:
+  daily:
+    type: vb                   # volatility_breakout
+    k: 0.40
+    ma_period: 200
+    volume_multiplier: 1.5
+    volume_lookback: 20
+    vp_lookback: 20
+    vp_bins: 50
+    fib_lookback: 50
+    use_supertrend: true
+    supertrend_period: 7
+    supertrend_multiplier: 3.0
+    use_macd_filter: false
+    use_rsi_divergence: true
+    use_bb_squeeze: false
+  4h:
+    type: vb
+    k: 0.35
+    ma_period: 200
+    volume_multiplier: 1.3
+    volume_lookback: 20
+    vp_lookback: 20
+    vp_bins: 40
+    fib_lookback: 40
+    use_supertrend: true
+    supertrend_period: 7
+    supertrend_multiplier: 3.0
+    use_macd_filter: false
+    use_rsi_divergence: true
+    use_bb_squeeze: false
+  1h:
+    type: vb
+    k: 0.25
+    ma_period: 50
+    volume_multiplier: 1.2
+    volume_lookback: 20
+    vp_lookback: 20
+    vp_bins: 30
+    fib_lookback: 30
+    use_supertrend: true
+    supertrend_period: 7
+    supertrend_multiplier: 3.0
+    use_macd_filter: false
+    use_rsi_divergence: true
+    use_bb_squeeze: true
+  15m:
+    type: mr                   # mean_reversion
+    rsi_oversold: 25
+    rsi_overbought: 75
+    bb_period: 20
+    bb_std: 2.0
+    vp_lookback: 40            # 40 × 15m = 10시간
+    vp_bins: 30
+    atr_period: 14
+
+# ── Tier별 거래 종목 (미지정 시 exchange_markets 기본값 사용) ─────────────
+tier_markets:
+  okx:
+    daily: [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
+    4h:    [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
+    1h:    [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
+    15m:   [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-BNB]   # 유동성 Top 5
+  upbit:
+    daily: [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-AVAX, KRW-SUI]
+    4h:    [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-AVAX, KRW-SUI]
+    1h:    [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK]
+    15m:   []   # Upbit 15m 제외 (최소주문 대비 소자본)
