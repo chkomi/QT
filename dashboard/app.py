@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 logger     = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 LOG_PATH   = ROOT / "logs" / "trades.log"
-BOT_LOG    = ROOT / "logs" / "bot.log"
+BOT_LOG    = ROOT / "logs" / "trades.log"   # main.py 가 trades.log 에 기록
 
 # 서버 시작 전에 static 디렉토리 보장
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
