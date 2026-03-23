@@ -1144,7 +1144,7 @@ schedule.every().hour.at(":00").do(run_strategy)            # 스윙: 매시 정
 schedule.every().minute.do(run_price_monitor)               # Tier1: 매분 SL/TP 체크
 schedule.every(5).minutes.do(run_scalp_strategy_safe)       # 단타: 5분마다 신호+진입
 schedule.every().day.at("23:00").do(send_daily_report)
-schedule.every(4).hours.do(send_periodic_report)            # 4시간 정기 현황+개선 제안
+schedule.every(10).minutes.do(send_periodic_report)          # 10분 정기 현황+개선 제안
 
 
 def main():
