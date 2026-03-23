@@ -111,9 +111,11 @@ class OKXExchange(ExchangeBase):
 
     def get_balance_quote(self) -> float:
         """
-        OKX 총 USDT 자산 = spot total + futures total (마진 + 미실현손익 포함)
-        spot.free만 쓰면 선물 계좌에 이체된 증거금이 누락됨.
-        30초 TTL 캐시로 20종목 × 반복 호출로 인한 Rate Limit(50011) 방지.
+        OKX 총 USDT 자산.
+        OKX Unified Trading Account(UTA) 사용 시 spot/futures fetch_balance() 가
+        동일한 계좌 잔고를 각각 반환하므로 합산하면 2배가 됨.
+        → 선물 계좌 우선 사용, 없으면 스팟으로 폴백.
+        30초 TTL 캐시로 Rate Limit(50011) 방지.
         """
         if self.paper_trading:
             return 0.0
@@ -122,17 +124,19 @@ class OKXExchange(ExchangeBase):
         if now - self._bal_cache.get("ts", 0) < self._BAL_TTL:
             return self._bal_cache["val"]
         total = 0.0
-        try:
-            spot_bal = self._spot.fetch_balance()
-            total += float(spot_bal.get("USDT", {}).get("total", 0) or 0)
-        except Exception as e:
-            logger.error(f"[OKX] Spot USDT 잔고 오류: {e}")
         if self._futures:
+            # 선물(거래) 계좌만 조회 — UTA 이중 계산 방지
             try:
                 fut_bal = self._futures.fetch_balance()
-                total += float(fut_bal.get("USDT", {}).get("total", 0) or 0)
+                total = float(fut_bal.get("USDT", {}).get("total", 0) or 0)
             except Exception as e:
                 logger.error(f"[OKX] Futures USDT 잔고 오류: {e}")
+        else:
+            try:
+                spot_bal = self._spot.fetch_balance()
+                total = float(spot_bal.get("USDT", {}).get("total", 0) or 0)
+            except Exception as e:
+                logger.error(f"[OKX] Spot USDT 잔고 오류: {e}")
         self._bal_cache = {"ts": now, "val": total}
         return total
 
