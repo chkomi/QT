@@ -45,8 +45,8 @@ asset_weights: {}  # runtime에 refresh_asset_weights()로 채워짐
 trading:
   initial_capital: 1000000       # 초기 투자금 (원)
   max_position_ratio: 0.25       # 종목당 최대 비중 25% (워뇨띠: 20~30%)
-  stop_loss_pct: -0.03           # 손절 -3%
-  take_profit_pct: 0.054         # 익절 +5.4% (손익비 1.8:1 확보)
+  stop_loss_pct: -0.04           # 스윙 롱 손절 -4% (장투: 여유있게)
+  take_profit_pct: 0.08          # 스윙 롱 익절 +8% (장투: 목표 높게)
   daily_loss_limit_pct: -0.20    # 일일 최대 손실 -20% (워뇨띠 기준)
   min_order_amount: 5000         # 최소 주문금액 (원)
 
@@ -68,8 +68,10 @@ strategies:
     use_macd_filter: false        # MACD 방향 필터 OFF — 하락장 숏 진입 기회 확대 (4AND→3AND)
     use_atr_sl: true             # ATR 동적 SL/TP (고정 % 대체)
     atr_period: 14
-    atr_sl_multiplier: 1.5       # SL = 진입가 ± ATR × 1.5
-    atr_tp_multiplier: 3.0       # TP = 진입가 ± ATR × 3.0  (2:1 손익비)
+    atr_sl_multiplier: 2.0       # 롱 SL = 진입가 + ATR × 2.0 (장투: 여유)
+    atr_tp_multiplier: 4.0       # 롱 TP = 진입가 + ATR × 4.0 (장투: 목표 높게)
+    short_atr_sl_multiplier: 1.0 # 숏 SL = 진입가 + ATR × 1.0 (단타: 타이트, 급등 방지)
+    short_atr_tp_multiplier: 2.0 # 숏 TP = 진입가 - ATR × 2.0 (단타: 빠른 익절)
     use_rsi_divergence: true     # RSI 다이버전스 confidence boost (EmperorBTC 활성화)
     use_bb_squeeze: false        # BB squeeze confidence boost (스캘핑 효과적)
 
@@ -108,16 +110,21 @@ scalp_trading:
   timeframe: minute60            # 1시간봉
   total_capital_ratio: 0.30      # OKX 잔고의 30% = 전체 단타 자본 (종목별 = 30% × 시가총액가중치)
   capital_ratio: 0.075           # 하위 호환용 (total_capital_ratio 없을 때 폴백)
-  k: 0.25                        # 돌파 민감도 ↓ — 진입 기회 확대 (기존 0.35)
+  k: 0.18                        # 돌파 민감도 ↓ — 진입 빈도 최대화 (기존 0.25)
   ma_period: 50                  # 50H ≈ 2일 단기 추세
-  volume_multiplier: 1.2         # 거래량 필터 ↓ — 기존 2.0에서 완화 (진입 빈도↑)
+  volume_multiplier: 1.0         # 거래량 필터 완화 — 진입 빈도 확대 (기존 1.2)
   volume_lookback: 20
   vp_lookback: 20
   vp_bins: 30
   fib_lookback: 30
-  stop_loss_pct: -0.012          # -1.2% 손절
-  take_profit_pct: 0.020         # +2.0% 익절  (손익비 1.67:1)
-  max_holding_hours: 6           # 6시간 초과 시 강제 청산
+  # ── 롱 단타 (장투 방향) ────────────────────────────────
+  stop_loss_pct: -0.015          # 롱 손절 -1.5% (여유있게)
+  take_profit_pct: 0.025         # 롱 익절 +2.5% (넉넉하게)
+  max_holding_hours: 12          # 롱 최대 보유 12H (길게 유지)
+  # ── 숏 단타 전용 (단기 빠른 진출, 급등 손절) ────────────
+  short_stop_loss_pct: -0.008    # 숏 손절 -0.8% (타이트: 급등 즉시 손절)
+  short_take_profit_pct: 0.012   # 숏 익절 +1.2% (빠른 이익 실현)
+  short_max_holding_hours: 2     # 숏 최대 보유 2H (단타 원칙)
   short_consec: 1                # 숏 진입 연속 하락 봉 수 (1H봉 기준) — use_supertrend시 대체됨
   use_supertrend: true           # Supertrend 방향 필터 (consec_down 대체, 1H 스캘프 숏 정확도↑)
   supertrend_period: 7

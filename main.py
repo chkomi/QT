@@ -494,8 +494,12 @@ def _check_and_close_scalp_long(ex_name: str, ex, rm, market: str, price: float,
 
 
 def _check_and_close_scalp_short(ex_name: str, ex, rm, market: str, price: float, sp: dict) -> bool:
-    """단타 숏 시간 손절 + Break-even SL + SL/TP 체크. 청산 시 True."""
-    MAX_H = SC_CFG.get("max_holding_hours", 6)
+    """단타 숏 시간 손절 + Break-even SL + SL/TP 체크. 청산 시 True.
+    숏은 단타 원칙: 타이트 SL(급등 즉시 손절), 빠른 TP, 최대 2H 보유."""
+    # 숏 전용 파라미터 (config: short_* 우선, 없으면 기본값)
+    SHORT_SL  = abs(SC_CFG.get("short_stop_loss_pct",  -0.008))  # 0.8% 타이트
+    SHORT_TP  =     SC_CFG.get("short_take_profit_pct",  0.012)  # 1.2% 빠른 익절
+    MAX_H     =     SC_CFG.get("short_max_holding_hours", 2)     # 2H 최대 보유
     # 시간 손절
     if sp["entry_time"]:
         held_h = (datetime.now() - sp["entry_time"]).total_seconds() / 3600
@@ -508,10 +512,10 @@ def _check_and_close_scalp_short(ex_name: str, ex, rm, market: str, price: float
                 logger.info(f"[{ex_name}][{market}] 단타 숏 시간청산 {MAX_H}H | {pnl:+.2f}%")
             return True
     # Break-even SL
-    short_stop   = sp["entry_price"] * (1 + abs(rm.stop_loss_pct))
-    short_profit = sp["entry_price"] * (1 - rm.take_profit_pct)
+    short_stop   = sp["entry_price"] * (1 + SHORT_SL)
+    short_profit = sp["entry_price"] * (1 - SHORT_TP)
     scalp_sp_profit_pct = (sp["entry_price"] - price) / sp["entry_price"]
-    if scalp_sp_profit_pct >= abs(rm.stop_loss_pct) and short_stop > sp["entry_price"]:
+    if scalp_sp_profit_pct >= SHORT_SL and short_stop > sp["entry_price"]:
         short_stop = sp["entry_price"]
         logger.info(f"[{ex_name}][{market}] 단타 숏 Break-even SL 적용 | 진입가: {sp['entry_price']:.2f} (+{scalp_sp_profit_pct*100:.1f}%)")
     # SL
@@ -600,8 +604,17 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, e
 
     atr_sl_long  = _safe_float(latest.get("atr_sl_long"))
     atr_tp_long  = _safe_float(latest.get("atr_tp_long"))
-    atr_sl_short = _safe_float(latest.get("atr_sl_short"))
-    atr_tp_short = _safe_float(latest.get("atr_tp_short"))
+    # 스윙 숏: short_atr_sl_multiplier 적용 — 전략 기본값보다 타이트하게 재계산
+    _strat_cfg    = config.get("strategies", {}).get("volatility_breakout", {})
+    _atr_raw      = _safe_float(latest.get("atr"))
+    _short_sl_mult = _strat_cfg.get("short_atr_sl_multiplier", 1.0)
+    _short_tp_mult = _strat_cfg.get("short_atr_tp_multiplier", 2.0)
+    if _atr_raw:
+        atr_sl_short = price + _atr_raw * _short_sl_mult   # 숏 SL: 진입가 + ATR×1.0 (타이트)
+        atr_tp_short = price - _atr_raw * _short_tp_mult   # 숏 TP: 진입가 - ATR×2.0 (빠른 익절)
+    else:
+        atr_sl_short = _safe_float(latest.get("atr_sl_short"))
+        atr_tp_short = _safe_float(latest.get("atr_tp_short"))
 
     logger.info(
         f"[{ex_name}][{market}] 현재가: {price:,.2f} | MA200: {ma200:,.2f} "
