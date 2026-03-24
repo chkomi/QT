@@ -1018,8 +1018,81 @@ def send_daily_report():
     notifier.send("\n".join(lines))
 
 
+def _scan_entry_status(fgi_val) -> dict:  # fgi_val: Optional[int]
+    """각 종목별 롱/숏 진입 상태 및 대기 사유 분석 (send_periodic_report 용)"""
+    result = {}
+    for ex_name, ex in EXCHANGES.items():
+        result[ex_name] = {}
+        strat = strategy_longshort if ex_name == "okx" else strategy_long
+        for market in get_markets(ex_name):
+            try:
+                price = ex.get_current_price(market)
+                if not price:
+                    continue
+                df = ex.fetch_ohlcv(market, interval="day", count=210)
+                if df is None or len(df) < 200:
+                    continue
+                sig_df = strat.generate_signals(df)
+                if sig_df.empty:
+                    continue
+                latest   = sig_df.iloc[-1]
+                signal   = int(latest.get("signal", 0))
+                rsi      = float(latest.get("rsi", 50) or 50)
+                ma200    = float(latest.get("ma200", 0) or 0)
+                conf     = int(latest.get("confidence", 1) or 1)
+                trend_up = (price > ma200) if ma200 > 0 else None
+                trend    = "▲상승" if trend_up else "▼하락" if trend_up is False else "횡보"
+
+                lp = long_positions[ex_name][market]
+                sp = short_positions[ex_name][market]
+
+                # ── 롱 상태 ──────────────────────────────
+                if lp["held"] and lp["entry_price"] > 0:
+                    pnl = (price - lp["entry_price"]) / lp["entry_price"] * 100
+                    long_s = f"✅ 보유 중 ({pnl:+.1f}%)"
+                elif signal == 1:
+                    long_s = f"🔵 신호 발생 — 확신도 {conf}/5"
+                elif signal == -1:
+                    long_s = "⏸ 대기 — 청산 신호 발생"
+                elif signal == 2:
+                    long_s = "⏸ 대기 — 숏 신호 상태 (signal=2)"
+                elif trend_up is False:
+                    long_s = f"⏸ 대기 — MA200 하락추세, RSI={rsi:.0f}" if rsi >= 35 else \
+                             f"🟡 대기 — 하락추세+RSI과매도({rsi:.0f}), 반등 가능성"
+                elif trend_up is True:
+                    long_s = f"⏸ 대기 — 상승추세이나 롱 신호 미발생"
+                else:
+                    long_s = "⏸ 대기 — 횡보 구간"
+
+                # ── 숏 상태 (OKX 전용) ────────────────────
+                short_s = None
+                if ex_name == "okx":
+                    if sp["held"] and sp["entry_price"] > 0:
+                        pnl = (sp["entry_price"] - price) / sp["entry_price"] * 100
+                        short_s = f"✅ 보유 중 ({pnl:+.1f}%)"
+                    elif fgi_val is not None and fgi_val <= 10:
+                        short_s = f"🚫 차단 — FGI 극도공포({fgi_val})"
+                    elif signal == 2:
+                        short_s = f"🔵 신호 발생 — 확신도 {conf}/5"
+                    elif signal == 1:
+                        short_s = "⏸ 대기 — 롱 신호 상태 (signal=1)"
+                    elif trend_up is True:
+                        short_s = "⏸ 대기 — 상승추세(MA200 상향), 숏 불리"
+                    else:
+                        short_s = f"⏸ 대기 — 하락추세 지속, 숏 신호 미발생"
+
+                result[ex_name][market] = {
+                    "coin":  market.replace("KRW-", ""),
+                    "price": price, "trend": trend, "rsi": rsi,
+                    "signal": signal, "long": long_s, "short": short_s,
+                }
+            except Exception as e:
+                logger.warning(f"[리포트 스캔] {ex_name}/{market}: {e}")
+    return result
+
+
 def send_periodic_report():
-    """4시간마다 전송하는 현황 리포트 + 개선 제안"""
+    """10분마다 전송하는 현황 리포트 + 종목별 진입 현황"""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # ── 1. 매크로 ──────────────────────────────────────
@@ -1153,6 +1226,41 @@ def send_periodic_report():
     lines.append("\n💡 <b>개선 제안</b>\n" + "\n".join(suggestions))
 
     notifier.send("\n".join(lines))
+
+    # ── 6. 종목별 진입 현황 스캔 (거래소별 별도 메시지) ─────
+    try:
+        scan = _scan_entry_status(fgi_val)
+        for ex_name, markets in scan.items():
+            if not markets:
+                continue
+            ex_label = "OKX 선물" if ex_name == "okx" else ex_name.upper()
+            scan_lines = [f"🔍 <b>{ex_label} 종목별 진입 현황</b>  {now_str}\n"]
+            for market, info in markets.items():
+                coin  = info["coin"]
+                trend = info["trend"]
+                rsi   = info["rsi"]
+                price = info["price"]
+                scan_lines.append(
+                    f"<b>{coin}</b>  {price:,.2f} | {trend} | RSI {rsi:.0f}"
+                )
+                scan_lines.append(f"  롱: {info['long']}")
+                if info["short"] is not None:
+                    scan_lines.append(f"  숏: {info['short']}")
+                scan_lines.append("")   # 빈 줄 구분
+
+            # 4000자 초과 시 분할 전송
+            chunk, char_count = [], 0
+            for line in scan_lines:
+                if char_count + len(line) > 3800:
+                    notifier.send("\n".join(chunk))
+                    chunk, char_count = [], 0
+                chunk.append(line)
+                char_count += len(line)
+            if chunk:
+                notifier.send("\n".join(chunk))
+    except Exception as e:
+        logger.error(f"[정기 리포트] 종목 스캔 오류: {e}")
+
     logger.info(f"[정기 리포트] 전송 완료 | 포지션 {total_open}개")
 
 
