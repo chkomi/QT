@@ -1,9 +1,14 @@
 """
 trades.log 파서 — 거래 이벤트를 구조화된 데이터로 변환
 
-실제 로그 포맷:
+v1 로그 포맷:
   2026-03-18 07:07:56,960 [INFO] main — [upbit][KRW-BTC] 현물롱 진입 | 14,828.00 KRW
   2026-03-18 07:07:56,960 [INFO] main — [okx][KRW-SOL] 스윙 숏 진입 | 138.25 USDT
+
+v2 로그 포맷:
+  [INFO] main — [v2][1h][okx][KRW-XRP] 롱 진입 | conf=3 lev=1x size=100 @ 1.40 | SL=... TP=...
+  [INFO] main — [TRADE] SHORT KRW-XRP tier=1h | entry=1.40 exit=1.35 pnl=+3.57 pnl_pct=+3.57% reason=TP(...)
+
 구분자: — (em dash U+2014)
 """
 import re
@@ -59,6 +64,22 @@ RISK_INIT_RE    = re.compile(r'^\[RiskManager\] 일일 초기화 \| 자본: (?P<
 CAPITAL_BLOCK_RE = re.compile(r'^\[RiskManager\] 투자 가능 금액 부족')
 DAILY_LIMIT_RE   = re.compile(r'거래 중단 상태|일일 손실 한도 초과|daily.*loss.*limit', re.IGNORECASE)
 MACRO_BLOCK_RE   = re.compile(r'^\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] 단타 차단 \u2014 Macro: (?P<reason>.+)$')
+
+# ── v2 거래 이벤트 패턴 ──────────────────────────────────────────
+# 진입: [v2][tier][ex][mkt] 롱/숏 진입 | conf=N lev=Nx size=S @ P | SL=... TP=...
+V2_ENTRY_RE = re.compile(
+    r'^\[v2\]\[(?P<tier>\w+)\]\[(?P<ex>\w+)\]\[(?P<mkt>[\w-]+)\] '
+    r'(?P<side>롱|숏) 진입 \| '
+    r'conf=(?P<conf>\d+) lev=(?P<lev>\d+)x size=(?P<size>[\d,.]+) @ (?P<price>[\d,.]+)'
+)
+# 청산 결과: [TRADE] LONG/SHORT KRW-XXX tier=T | entry=E exit=X pnl=P pnl_pct=PP% reason=R
+V2_TRADE_RESULT_RE = re.compile(
+    r'^\[TRADE\] (?P<side>LONG|SHORT) (?P<mkt>[\w-]+) tier=(?P<tier>\w+) \| '
+    r'entry=(?P<entry>[\d.]+) exit=(?P<exit>[\d.]+) '
+    r'pnl=(?P<pnl>[+-]?[\d.]+) pnl_pct=(?P<pnl_pct>[+-][\d.]+)% reason=(?P<reason>.+)$'
+)
+# v2 전략 실행: [v2][tier] ── 전략 실행 | datetime
+V2_STRATEGY_RUN_RE = re.compile(r'^\[v2\]\[(?P<tier>\w+)\] \u2500\u2500 전략 실행 \| (?P<dt>\d{4}-\d{2}-\d{2} \d{2}:\d{2})$')
 
 
 def _parse_ts(ts_str: str) -> datetime:
@@ -254,6 +275,38 @@ class LogParser:
                         "amount": None, "currency": None,
                         "pnl_pct": float(mm.group("pnl")),
                     }
+                # ── v2 진입 이벤트 ───────────────────────────────
+                elif mm := V2_ENTRY_RE.match(msg):
+                    side = mm.group("side")
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": mm.group("ex"), "market": mm.group("mkt"),
+                        "tier": mm.group("tier"),
+                        "side": "buy" if side == "롱" else "short",
+                        "type": "v2_long_entry" if side == "롱" else "v2_short_entry",
+                        "amount": _parse_float(mm.group("size")),
+                        "currency": "USDT", "pnl_pct": None,
+                    }
+                # ── v2 청산 결과 ──────────────────────────────────
+                elif mm := V2_TRADE_RESULT_RE.match(msg):
+                    side = mm.group("side")
+                    reason = mm.group("reason")
+                    if "SL" in reason:
+                        trade_type = "v2_stop_loss"
+                    elif "TP" in reason:
+                        trade_type = "v2_take_profit"
+                    else:
+                        trade_type = "v2_close"
+                    event = {
+                        "timestamp": ts_iso, "timestamp_unix": ts_unix,
+                        "exchange": None, "market": mm.group("mkt"),
+                        "tier": mm.group("tier"),
+                        "side": "sell" if side == "LONG" else "cover",
+                        "type": trade_type,
+                        "amount": None, "currency": "USDT",
+                        "pnl_pct": float(mm.group("pnl_pct")),
+                        "reason": reason,
+                    }
 
             if event:
                 events.append(event)
@@ -263,14 +316,15 @@ class LogParser:
         return events
 
     def get_last_strategy_run(self) -> Optional[str]:
-        """최근 전략 실행 타임스탬프"""
+        """최근 전략 실행 타임스탬프 (v1 + v2 포맷 지원)"""
         if not self._file_exists():
             return None
         for line in _read_lines_reversed(self.log_path, max_lines=1000):
             m = BASE_RE.match(line)
             if not m:
                 continue
-            if STRATEGY_RUN_RE.match(m.group("msg")):
+            msg = m.group("msg")
+            if STRATEGY_RUN_RE.match(msg) or V2_STRATEGY_RUN_RE.match(msg):
                 return _parse_ts(m.group("ts")).isoformat()
         return None
 
