@@ -208,6 +208,7 @@ cap_allocator = CapitalAllocator(config)
 entry_engine = EntryEngine(config)
 _TIER_MARKETS = config.get("tier_markets", {})
 _RISK_TIERS = config.get("risk_tiers", {})
+_CAPITAL_CFG = config.get("capital_allocation", {})
 _CONFLUENCE_CFG = config.get("confluence", {})
 _TF_LOCK = threading.Lock()
 
@@ -633,6 +634,30 @@ def _process(ex_name: str, market: str, df, strat: VolatilityBreakoutStrategy, e
         f"[{ex_name}][{market}] 현재가: {price:,.2f} | MA200: {ma200:,.2f} "
         f"| {trend} | 신호: {int(signal)}"
     )
+
+    # 신호=0 진단 로그 — 어떤 필터가 막히는지 출력 (DEBUG 레벨)
+    if signal == 0:
+        _ema20  = float(latest.get("ema_20", 0) or 0)
+        _ema55  = float(latest.get("ema_55", 0) or 0)
+        _st_dir = int(latest.get("supertrend_dir", 0) or 0)
+        _vol    = bool(latest.get("vol_surge", False))
+        _atr_v  = float(latest.get("atr", 0) or 0)
+        _macd_h = float(latest.get("macd_hist", 0) or 0)
+        # 롱 필터
+        _bp_long = price > ma200
+        _ema_l   = _ema20 > _ema55 and price > ma200 if _ema20 > 0 else False
+        _st_l    = _st_dir == 1
+        # 숏 필터
+        _bp_sht  = price < ma200
+        _ema_s   = _ema20 < _ema55 and price < ma200 if _ema20 > 0 else False
+        _st_s    = _st_dir == -1
+        logger.debug(
+            f"[진단][{ex_name}][{market}] "
+            f"롱(MA200↑{'✓' if _bp_long else '✗'} EMA↑{'✓' if _ema_l else '✗'} "
+            f"ST↑{'✓' if _st_l else '✗'} Vol{'✓' if _vol else '✗'}) | "
+            f"숏(MA200↓{'✓' if _bp_sht else '✗'} EMA↓{'✓' if _ema_s else '✗'} "
+            f"ST↓{'✓' if _st_s else '✗'} MACD{'✓' if _macd_h < 0 else '✗'})"
+        )
 
     # ── 스윙 숏 추세 반전 청산 ────────────────────────
     # 진입 조건(MA200 하향 + EMA 하향)이 무너지면 즉시 청산
@@ -1569,6 +1594,16 @@ def _run_tier(tier: str):
                     )
                     if not can_open:
                         logger.info(f"[v2][{tier}][{ex_name}][{market}] 진입 거부: {deny_reason}")
+                        continue
+
+                    # 코인당 Tier 중복 제한 (max_tiers_per_coin)
+                    _max_tiers = _CAPITAL_CFG.get("max_tiers_per_coin", 99)
+                    _coin_tiers = pos_manager.count_tiers_for_coin(ex_name, market)
+                    if _coin_tiers >= _max_tiers:
+                        logger.info(
+                            f"[v2][{tier}][{ex_name}][{market}] "
+                            f"Tier 중복 차단: {_coin_tiers}/{_max_tiers} Tier 이미 보유"
+                        )
                         continue
 
                     # 포지션 크기 + 레버리지

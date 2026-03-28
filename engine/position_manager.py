@@ -152,6 +152,12 @@ class PositionManager:
     def count_direction(self, direction: str) -> int:
         return sum(1 for p in self._positions.values() if p.direction == direction)
 
+    def count_tiers_for_coin(self, exchange: str, market: str) -> int:
+        """같은 코인에 열려 있는 Tier 수 반환 (방향 무관)."""
+        tiers = {p.tier for p in self._positions.values()
+                 if p.exchange == exchange and p.market == market}
+        return len(tiers)
+
     def expired_positions(self) -> List[Position]:
         return [p for p in self._positions.values() if p.is_expired]
 

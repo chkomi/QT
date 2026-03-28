@@ -198,27 +198,28 @@ confluence:
   macro_weight: 1             # 매크로 환경 (FGI, 펀딩비 등)
   top_trader_weight: 1        # Top Trader 정렬
   volume_weight: 1            # 거래량 서지 확인
-  min_score: 1                # 최소 진입 점수 완화 — 거래 빈도 최대화
+  min_score: 3                # 최소 진입 점수 — score 1~2 저확신 진입 차단
   # confluence → 포지션 크기 배수 (점수: 배수)
   score_to_size:
-    1: 0.60                   # 1-2점: 60% (공격적 — 하락장)
-    3: 0.80                   # 3-4점: 80%
+    1: 0.40                   # 1-2점: 40% (거의 진입 안 함)
+    3: 0.70                   # 3-4점: 70%
     5: 1.00                   # 5+점: 풀 사이즈
     7: 1.00                   # 7+점: 풀 사이즈
-  # confluence → 레버리지 (점수: 배수)  하락장 공격적 레버리지
+  # confluence → 레버리지 (점수: 배수) — 낮은 확신도에 레버리지 금지
   score_to_leverage:
-    1: 2                      # 1-2점: 2x
-    3: 3                      # 3-4점: 3x
-    5: 5                      # 5+점: 5x
+    1: 1                      # 1-2점: 1x (레버 없음)
+    3: 2                      # 3-4점: 2x (보수적)
+    5: 4                      # 5+점: 4x
     7: 5                      # 7+점: 5x
 
 # ── 자본 배분 (공유 풀 방식) ──────────────────────────────────────────────
 capital_allocation:
   mode: shared_pool            # shared_pool: 전체 자본 공유 + 포지션 수 제한
-  max_total_positions: 14      # 전체 동시 포지션 한도 확대 (단타 활성화)
-  max_per_asset_pct: 0.30      # 종목당 최대 노출 30%
-  max_single_position_pct: 0.30  # 단일 포지션 최대 크기 30%
-  same_direction_limit_pct: 1.0   # 방향 편중 차단 비활성화 (하락장 숏 집중 허용)
+  max_total_positions: 12      # 14 → 12: 과도한 동시 포지션 축소
+  max_per_asset_pct: 0.25      # 종목당 최대 노출 25% (30% → 과도 집중 방지)
+  max_single_position_pct: 0.25  # 단일 포지션 최대 크기 25%
+  max_tiers_per_coin: 2        # 같은 코인 최대 2개 Tier 동시 보유 (XRP daily+4h+1h 중복 방지)
+  same_direction_limit_pct: 0.75  # 동일 방향 최대 75% (숏 집중 허용하되 90%+ 차단)
   # Tier별 동시 포지션 상한
   tier_position_limits:
     daily: 5                  # 3 → 5: 하락장 daily 숏 확대
@@ -238,7 +239,7 @@ risk_tiers:
     atr_sl_mult: 1.5           # 2.0 → 1.5: 타이트 손절 (틀리면 빠른 컷)
     atr_tp_mult: 2.5           # 4.0 → 2.5: 빠른 익절 (수익 즉시 실현)
     atr_period: 14
-    max_leverage: 5
+    max_leverage: 2            # 5 → 2: daily 포지션 최대 레버리지 보수적 제한
     max_holding_days: 4        # 30 → 4: 자본 재활용 빠르게
     daily_loss_limit_pct: -0.20
   4h:
