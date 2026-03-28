@@ -67,8 +67,8 @@ function renderHero(pos, health) {
   const amt = pos.total_equity_usdt || 0;
   document.getElementById('hero-amount').textContent = `$${amt.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  const upbit = pos.upbit_equity_krw || 0;
-  document.getElementById('hero-upbit').textContent = `Upbit ₩${Math.round(upbit).toLocaleString()}`;
+  // Upbit 비활성화 — 표시 안 함
+  document.getElementById('hero-upbit').textContent = '';
 
   // Bot status
   const badge = document.getElementById('hero-bot');
