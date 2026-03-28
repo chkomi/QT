@@ -62,6 +62,17 @@ class Position:
         return cls(**d)
 
 
+_COOLDOWN_FILE = Path(__file__).parent.parent / "data" / "sl_cooldowns.json"
+
+# Tier별 SL 쿨다운 시간 (초)
+_SL_COOLDOWN_SECS: Dict[str, int] = {
+    "daily": 172800,   # 2일
+    "4h":    28800,    # 8시간
+    "1h":    10800,    # 3시간 (같은 방향 XRP 재진입 방지)
+    "15m":   1800,     # 30분
+}
+
+
 class PositionManager:
     """Tier별 포지션 추적 + 충돌 해결 + 디스크 직렬화."""
 
@@ -69,7 +80,10 @@ class PositionManager:
         self._positions: Dict[str, Position] = {}
         self._path = persistence_path or _POS_FILE
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._cooldowns: Dict[str, float] = {}   # key → 쿨다운 만료 timestamp
+        self._cooldown_path = _COOLDOWN_FILE
         self._load()
+        self._load_cooldowns()
 
     # ── CRUD ──────────────────────────────────────────────────
 
@@ -140,6 +154,45 @@ class PositionManager:
 
     def expired_positions(self) -> List[Position]:
         return [p for p in self._positions.values() if p.is_expired]
+
+    # ── SL 쿨다운 (동일 종목/방향 재진입 방지) ───────────────────
+
+    def record_sl_hit(self, key: str, tier: str) -> None:
+        """SL 손절 발생 시 쿨다운 등록."""
+        secs = _SL_COOLDOWN_SECS.get(tier, 3600)
+        self._cooldowns[key] = time.time() + secs
+        logger.info(f"[PosMgr] SL 쿨다운 등록: {key} ({secs//3600:.1f}h)")
+        self._save_cooldowns()
+
+    def is_in_sl_cooldown(self, key: str) -> bool:
+        """해당 key가 쿨다운 중이면 True."""
+        expiry = self._cooldowns.get(key)
+        if expiry is None:
+            return False
+        if time.time() < expiry:
+            return True
+        # 만료 → 제거
+        del self._cooldowns[key]
+        self._save_cooldowns()
+        return False
+
+    def _save_cooldowns(self) -> None:
+        try:
+            self._cooldown_path.write_text(
+                json.dumps(self._cooldowns, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.warning(f"[PosMgr] 쿨다운 저장 실패: {e}")
+
+    def _load_cooldowns(self) -> None:
+        if not self._cooldown_path.exists():
+            return
+        try:
+            self._cooldowns = json.loads(self._cooldown_path.read_text(encoding="utf-8"))
+            now = time.time()
+            self._cooldowns = {k: v for k, v in self._cooldowns.items() if v > now}
+        except Exception:
+            self._cooldowns = {}
 
     # ── 동기화 (거래소 실제 포지션과 맞추기) ────────────────────
 

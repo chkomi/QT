@@ -87,6 +87,7 @@ class CapitalAllocator:
         direction: str,
         market: str,
         open_positions: list,
+        exchange: str = None,
     ) -> Tuple[bool, str]:
         """
         신규 포지션 개시 가능 여부 판단.
@@ -94,6 +95,7 @@ class CapitalAllocator:
         Parameters
         ----------
         open_positions : [{"tier": str, "direction": str, "market": str, ...}, ...]
+        exchange       : 거래소 이름 (okx/upbit 등). 지정 시 Tier 한도를 거래소별로 독립 계산.
 
         Returns
         -------
@@ -103,10 +105,23 @@ class CapitalAllocator:
         if total_open >= self.max_total_positions:
             return False, f"전체 포지션 한도 초과 ({total_open}/{self.max_total_positions})"
 
-        tier_count = sum(1 for p in open_positions if p["tier"] == tier)
+        # Tier 한도: 거래소별 + 방향별로 독립 계산
+        # (OKX 1h long 3개 있어도 OKX 1h short는 별도 한도 적용)
+        if exchange:
+            tier_count = sum(
+                1 for p in open_positions
+                if p["tier"] == tier
+                and p.get("exchange") == exchange
+                and p.get("direction") == direction
+            )
+        else:
+            tier_count = sum(
+                1 for p in open_positions
+                if p["tier"] == tier and p.get("direction") == direction
+            )
         tier_limit = self.tier_position_limits.get(tier, 3)
         if tier_count >= tier_limit:
-            return False, f"Tier [{tier}] 포지션 한도 초과 ({tier_count}/{tier_limit})"
+            return False, f"Tier [{tier}] {direction} 포지션 한도 초과 ({tier_count}/{tier_limit})"
 
         # 같은 종목 반대 방향 금지 (소자본 규칙)
         for p in open_positions:
@@ -116,7 +131,7 @@ class CapitalAllocator:
         # 방향 편중 제한 (80% 이상 같은 방향이면 추가 차단)
         if total_open > 0:
             same_dir = sum(1 for p in open_positions if p["direction"] == direction)
-            if same_dir / total_open >= self.same_direction_limit_pct and total_open >= 3:
+            if same_dir / total_open > self.same_direction_limit_pct and total_open >= 3:
                 return False, f"방향 편중 ({direction} {same_dir}/{total_open} >= {self.same_direction_limit_pct:.0%})"
 
         return True, "OK"

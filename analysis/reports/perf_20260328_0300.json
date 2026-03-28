@@ -1,0 +1,71 @@
+{
+  "generated": "20260328_0300",
+  "days": 7,
+  "trades_count": 7,
+  "analysis": {
+    "total": {
+      "count": 7,
+      "win": 2,
+      "win_rate": 28.6,
+      "total_pnl": -4.46,
+      "avg_pnl": -0.6377
+    },
+    "by_market": {
+      "KRW-XRP": {
+        "count": 7,
+        "win": 2,
+        "win_rate": 28.6,
+        "total_pnl": -4.46,
+        "avg_pnl": -0.6377
+      }
+    },
+    "by_tier": {
+      "1h": {
+        "count": 7,
+        "win": 2,
+        "win_rate": 28.6,
+        "total_pnl": -4.46,
+        "avg_pnl": -0.6377
+      }
+    },
+    "by_direction": {
+      "short": {
+        "count": 7,
+        "win": 2,
+        "win_rate": 28.6,
+        "total_pnl": -4.46,
+        "avg_pnl": -0.6377
+      }
+    },
+    "by_hour": {
+      "5": {
+        "count": 1,
+        "win": 0,
+        "win_rate": 0.0,
+        "total_pnl": -3.9,
+        "avg_pnl": -3.9015
+      },
+      "9": {
+        "count": 2,
+        "win": 0,
+        "win_rate": 0.0,
+        "total_pnl": -5.53,
+        "avg_pnl": -2.7631
+      },
+      "20": {
+        "count": 2,
+        "win": 0,
+        "win_rate": 0.0,
+        "total_pnl": -4.97,
+        "avg_pnl": -2.4851
+      },
+      "23": {
+        "count": 2,
+        "win": 2,
+        "win_rate": 100.0,
+        "total_pnl": 9.93,
+        "avg_pnl": 4.9671
+      }
+    }
+  }
+}

@@ -29,6 +29,25 @@ _FUTURES_OVERRIDE: dict = {
 }
 
 
+# ── OKX USDT 무기한 선물 계약 크기 (심볼당 코인 수) ──
+# ccxt create_market_order의 amount 파라미터는 '계약 수' 단위임
+# amount_usdt / price / contract_size = contracts (정수)
+_FUTURES_CONTRACT_SIZES: dict = {}  # 런타임에 load_markets로 채워짐
+
+# 폴백용 기본값 (API 실패 시 사용)
+_CONTRACT_SIZE_FALLBACK = {
+    "BTC/USDT:USDT":  0.01,
+    "ETH/USDT:USDT":  0.1,
+    "BNB/USDT:USDT":  0.1,
+    "SOL/USDT:USDT":  1.0,
+    "XRP/USDT:USDT":  100.0,
+    "DOGE/USDT:USDT": 1000.0,
+    "LINK/USDT:USDT": 10.0,
+    "SUI/USDT:USDT":  100.0,
+    "POL/USDT:USDT":  100.0,
+}
+
+
 class OKXExchange(ExchangeBase):
     """
     Parameters
@@ -70,14 +89,36 @@ class OKXExchange(ExchangeBase):
                     "posMode": "net",          # 단방향(one-way) 모드 명시
                 }})
                 self._init_futures_settings()
+                self._load_contract_sizes()    # 계약 크기 로드
             logger.info(f"[OKX] 실전 모드 | 레버리지: {leverage}x | 숏: {use_short} | 종목: {len(self._markets)}개")
         else:
             # 페이퍼 모드에서도 공개 API(현재가)는 사용
             self._spot = ccxt.okx({"options": {"defaultType": "spot"}})
             logger.info(f"[OKX] 페이퍼 트레이딩 모드 | 종목: {len(self._markets)}개")
 
+    def _load_contract_sizes(self):
+        """OKX USDT 선물 계약 크기 로드 (ccxt markets 기반)"""
+        global _FUTURES_CONTRACT_SIZES
+        try:
+            markets = self._futures.load_markets()
+            for sym, mkt in markets.items():
+                if ":USDT" in sym:
+                    cs = float(mkt.get("contractSize") or 1.0)
+                    _FUTURES_CONTRACT_SIZES[sym] = cs
+            logger.info(f"[OKX] 계약 크기 로드 완료: {len(_FUTURES_CONTRACT_SIZES)}개")
+        except Exception as e:
+            logger.warning(f"[OKX] 계약 크기 로드 실패, 폴백 사용: {e}")
+            _FUTURES_CONTRACT_SIZES.update(_CONTRACT_SIZE_FALLBACK)
+
+    def _get_contract_size(self, symbol: str) -> float:
+        """심볼의 계약 크기 반환 (미로드 시 폴백)"""
+        cs = _FUTURES_CONTRACT_SIZES.get(symbol)
+        if cs:
+            return cs
+        return _CONTRACT_SIZE_FALLBACK.get(symbol, 1.0)
+
     def _init_futures_settings(self):
-        """선물 레버리지 및 마진 모드 초기 설정 (등록된 모든 마켓 × long/short)"""
+        """선물 레버리지 및 마진 모드 초기 설정 (hedge mode: long/short 각각 설정)"""
         for market in self._markets:
             symbol = self._futures_symbol(market)
             for pos_side in ["long", "short"]:
@@ -108,6 +149,12 @@ class OKXExchange(ExchangeBase):
 
     _bal_cache: dict = {}   # {"ts": float, "val": float}
     _BAL_TTL = 30           # 초: 30초 내 재호출 시 캐시 반환 (Rate Limit 방지)
+    _avail_cache: dict = {} # {"ts": float, "val": float}
+    _AVAIL_TTL = 5          # 초: 진입 직전 가용잔고 — 짧은 TTL로 최신값 유지
+
+    # 가용잔고 대비 최대 투자 비율 (마진 과다 사용 방지)
+    # 예: 0.85 → 가용잔고의 85%까지만 단일 진입 허용
+    MAX_MARGIN_RATIO = 0.85
 
     def get_balance_quote(self) -> float:
         """
@@ -139,6 +186,26 @@ class OKXExchange(ExchangeBase):
                 logger.error(f"[OKX] Spot USDT 잔고 오류: {e}")
         self._bal_cache = {"ts": now, "val": total}
         return total
+
+    def _get_available_balance(self) -> float:
+        """
+        선물 계좌 가용 USDT 잔고 (free).
+        진입 직전 호출 — 5초 TTL 캐시로 Rate Limit 방지.
+        """
+        if self.paper_trading or not self._futures:
+            return 0.0
+        import time
+        now = time.time()
+        if now - self._avail_cache.get("ts", 0) < self._AVAIL_TTL:
+            return self._avail_cache["val"]
+        try:
+            bal = self._futures.fetch_balance()
+            free = float(bal.get("USDT", {}).get("free", 0) or 0)
+        except Exception as e:
+            logger.warning(f"[OKX] 가용잔고 조회 실패: {e}")
+            free = 0.0
+        self._avail_cache = {"ts": now, "val": free}
+        return free
 
     def get_balance_coin(self, market: str) -> float:
         if self.paper_trading:
@@ -290,6 +357,19 @@ class OKXExchange(ExchangeBase):
             logger.warning(f"[OKX] 레버리지 동적 설정 실패 ({market} {leverage}x {pos_side}): {e}")
             return False
 
+    def set_leverage(self, market: str, leverage: int) -> bool:
+        """v2 호환 별칭 — set_leverage_dynamic (long/short 공용)"""
+        return self.set_leverage_dynamic(market, leverage, pos_side="long")
+
+    def open_long(self, market: str, amount_usdt: float, leverage: int = 1) -> Optional[dict]:
+        """v2 호환 별칭 — open_long_futures"""
+        return self.open_long_futures(market, amount_usdt, leverage=leverage)
+
+    def close_long(self, market: str, volume: float) -> bool:
+        """v2 호환 별칭 — close_long_futures (SL/TP 청산용)"""
+        result = self.close_long_futures(market, volume)
+        return result is not None
+
     # ── 선물 롱 진입/청산 ──────────────────────────────
 
     def open_long_futures(self, market: str, amount_usdt: float, leverage: int = 1) -> Optional[dict]:
@@ -304,15 +384,31 @@ class OKXExchange(ExchangeBase):
             logger.error("[OKX] 선물 클라이언트 미초기화")
             return None
         try:
+            # ── 가용잔고 기반 투자액 캡 (마진 과다 사용 방지) ────────────
+            avail = self._get_available_balance()
+            max_invest = avail * self.MAX_MARGIN_RATIO
+            if amount_usdt > max_invest:
+                logger.warning(
+                    f"[OKX] 롱 투자액 캡: {amount_usdt:.2f}→{max_invest:.2f} USDT "
+                    f"(가용잔고: {avail:.2f})"
+                )
+                amount_usdt = max_invest
+            if amount_usdt < 1.0:
+                logger.warning(f"[OKX] 가용잔고 부족으로 롱 진입 스킵 (가용: {avail:.2f} USDT)")
+                return None
             self.set_leverage_dynamic(market, leverage, pos_side="long")
             symbol = self._futures_symbol(market)
             price  = self.get_current_price(market)
-            volume = amount_usdt / price
+            cs     = self._get_contract_size(symbol)
+            contracts = int(amount_usdt / price / cs)
+            if contracts < 1:
+                logger.warning(f"[OKX] 선물 롱 최소 계약 미달: {amount_usdt:.2f} USDT (1계약={price*cs:.2f} USDT) → 스킵")
+                return None
             result = self._futures.create_market_buy_order(
-                symbol, volume,
+                symbol, contracts,
                 params={"tdMode": "isolated", "posSide": "long"}
             )
-            logger.info(f"[OKX] 선물 롱 진입 | {symbol} | {amount_usdt:.2f} USDT | {leverage}x")
+            logger.info(f"[OKX] 선물 롱 진입 | {symbol} | {contracts}계약 ({amount_usdt:.2f} USDT) | {leverage}x")
             return result
         except Exception as e:
             logger.error(f"[OKX] 선물 롱 진입 실패: {e}")
@@ -356,15 +452,31 @@ class OKXExchange(ExchangeBase):
             logger.error("[OKX] 선물 클라이언트 미초기화")
             return None
         try:
+            # ── 가용잔고 기반 투자액 캡 (마진 과다 사용 방지) ────────────
+            avail = self._get_available_balance()
+            max_invest = avail * self.MAX_MARGIN_RATIO
+            if amount_usdt > max_invest:
+                logger.warning(
+                    f"[OKX] 숏 투자액 캡: {amount_usdt:.2f}→{max_invest:.2f} USDT "
+                    f"(가용잔고: {avail:.2f})"
+                )
+                amount_usdt = max_invest
+            if amount_usdt < 1.0:
+                logger.warning(f"[OKX] 가용잔고 부족으로 숏 진입 스킵 (가용: {avail:.2f} USDT)")
+                return None
             self.set_leverage_dynamic(market, lev, pos_side="short")
             symbol = self._futures_symbol(market)
             price  = self.get_current_price(market)
+            cs     = self._get_contract_size(symbol)
+            contracts = int(amount_usdt / price / cs)
+            if contracts < 1:
+                logger.warning(f"[OKX] 숏 최소 계약 미달: {amount_usdt:.2f} USDT (1계약={price*cs:.2f} USDT) → 스킵")
+                return None
             result = self._futures.create_market_sell_order(
-                symbol,
-                amount_usdt / price,
+                symbol, contracts,
                 params={"tdMode": "isolated", "posSide": "short"}
             )
-            logger.info(f"[OKX] 숏 진입 | {symbol} | {amount_usdt:.2f} USDT | {lev}x")
+            logger.info(f"[OKX] 숏 진입 | {symbol} | {contracts}계약 ({amount_usdt:.2f} USDT) | {lev}x")
             return result
         except Exception as e:
             logger.error(f"[OKX] 숏 진입 실패: {e}")

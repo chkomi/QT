@@ -569,3 +569,171 @@ class VolatilityBreakoutStrategy(BaseStrategy):
 
         df["confidence"] = confidence.clip(1, 5)
         return df.dropna(subset=["prev_range"])
+
+    # ── 점수제 신호 생성 (v3) ────────────────────────────────────
+
+    def generate_signals_scored(
+        self,
+        df: pd.DataFrame,
+        min_long_score: int = 4,
+        min_short_score: int = 3,
+    ) -> pd.DataFrame:
+        """
+        v3: AND체인 제거 → 점수 기반 진입.
+
+        breakout은 필수, 나머지 필터는 점수로 가산.
+        score >= min_entry_score 이면 진입, score가 높을수록 confidence↑.
+
+        롱 점수 체계 (최대 9):
+          +2  변동성 돌파 (필수, 미충족 시 진입 불가)
+          +2  MA200 상승추세
+          +1  EMA 정렬
+          +1  거래량 급증
+          +1  VP 지지 위
+          +1  Supertrend 상향
+          +1  MACD 양수
+
+        숏 점수 체계 (최대 9):
+          +2  변동성 하향 돌파 (필수)
+          +2  MA200 하락추세
+          +1  EMA 역정렬
+          +1  거래량 급증
+          +1  VP 저항 아래
+          +1  Supertrend 하향
+          +1  하락봉 (close < prev_close)
+        """
+        df = df.copy()
+
+        # ── 지표 계산 (기존과 동일) ──────────────────────────────
+        df["ma200"] = df["close"].rolling(self.ma_period).mean()
+        df = calc_multi_ema(df, periods=[20, 55, 100, 200])
+        df["prev_range"] = df["high"].shift(1) - df["low"].shift(1)
+        df["target_long"] = df["open"] + df["prev_range"] * self.k
+        df["target_short"] = df["open"] - df["prev_range"] * self.k
+        df["vol_surge"] = volume_surge(df, self.volume_lookback, self.volume_multiplier)
+
+        vp_df = calc_volume_profile(df, self.vp_lookback, self.vp_bins)
+        df["vp_poc"] = vp_df["poc"]
+        df["vp_vah"] = vp_df["vah"]
+        df["vp_val"] = vp_df["val"]
+
+        fib_df = calc_fibonacci(df, self.fib_lookback)
+        for col in fib_df.columns:
+            df[col] = fib_df[col]
+
+        if self.use_supertrend or self.use_atr_sl:
+            df = calc_atr(df, self.atr_period)
+        if self.use_supertrend:
+            df = calc_supertrend(df, self.supertrend_period, self.supertrend_mult)
+        if self.use_macd_filter:
+            df = calc_macd(df)
+        if self.use_rsi_div:
+            df = detect_rsi_divergence(df)
+        if self.use_atr_sl and "atr" in df.columns:
+            df["atr_sl_long"] = df["close"] - df["atr"] * self.atr_sl_mult
+            df["atr_tp_long"] = df["close"] + df["atr"] * self.atr_tp_mult
+            df["atr_sl_short"] = df["close"] + df["atr"] * self.atr_sl_mult
+            df["atr_tp_short"] = df["close"] - df["atr"] * self.atr_tp_mult
+
+        # ── 개별 필터 조건 ─────────────────────────────────────
+        valid = df["prev_range"].notna() & (df["prev_range"] > 0)
+
+        # 돌파 (필수)
+        long_breakout = (df["high"] >= df["target_long"]) & (df["open"] < df["target_long"])
+        short_breakout = (df["low"] <= df["target_short"]) & (df["open"] > df["target_short"])
+
+        # 추세 필터
+        uptrend = df["close"] > df["ma200"]
+        downtrend = df["close"] < df["ma200"]
+
+        # EMA 정렬
+        ema_l = ema_aligned_long(df)
+        ema_s = ema_aligned_short(df)
+        # 완화된 EMA 숏: ema_20 < ema_55만 (close < ema_200 제거)
+        ema_s_soft = pd.Series(False, index=df.index)
+        if "ema_20" in df.columns and "ema_55" in df.columns:
+            ema_s_soft = df["ema_20"] < df["ema_55"]
+
+        # 거래량
+        vol_ok = df["vol_surge"]
+
+        # VP
+        vp_long_ok = df["close"] >= df["vp_val"].fillna(0)
+        vp_short_ok = df["close"] <= df["vp_vah"].fillna(float("inf"))
+
+        # Supertrend
+        st_up = df["supertrend_dir"] == 1 if self.use_supertrend else pd.Series(False, index=df.index)
+        st_down = df["supertrend_dir"] == -1 if self.use_supertrend else pd.Series(False, index=df.index)
+
+        # MACD
+        macd_pos = df["macd_hist"] > 0 if (self.use_macd_filter and "macd_hist" in df.columns) else pd.Series(False, index=df.index)
+        macd_neg = df["macd_hist"] < 0 if (self.use_macd_filter and "macd_hist" in df.columns) else pd.Series(False, index=df.index)
+
+        # 하락봉
+        down_candle = df["close"] < df["close"].shift(1)
+
+        # ── 점수 계산 ─────────────────────────────────────────
+        long_score = pd.Series(0, index=df.index, dtype=int)
+        long_score += (valid & long_breakout).astype(int) * 2   # 필수
+        long_score += uptrend.astype(int) * 2
+        long_score += ema_l.astype(int)
+        long_score += vol_ok.astype(int)
+        long_score += vp_long_ok.astype(int)
+        long_score += st_up.astype(int)
+        long_score += macd_pos.astype(int)
+
+        short_score = pd.Series(0, index=df.index, dtype=int)
+        short_score += (valid & short_breakout).astype(int) * 2  # 필수
+        short_score += downtrend.astype(int) * 2
+        short_score += ema_s_soft.astype(int)
+        short_score += vol_ok.astype(int)
+        short_score += vp_short_ok.astype(int)
+        short_score += st_down.astype(int)
+        short_score += down_candle.astype(int)
+
+        # ── 신호 생성 (breakout 필수 + score >= 임계값) ──────
+        df["signal"] = 0
+        df["long_score"] = long_score
+        df["short_score"] = short_score
+
+        long_entry = (valid & long_breakout & (long_score >= min_long_score))
+        df.loc[long_entry, "signal"] = 1
+
+        if self.use_short:
+            short_entry = (valid & short_breakout & (short_score >= min_short_score))
+            # 롱과 숏이 같은 봉에서 발생하면 score 높은 쪽 우선
+            overlap = long_entry & short_entry
+            if overlap.any():
+                df.loc[overlap & (short_score > long_score), "signal"] = 2
+                # long_score >= short_score면 롱 유지
+            df.loc[short_entry & ~long_entry, "signal"] = 2
+
+        # ── 확신도 = max(score) 기반 (1~5 매핑) ──────────────
+        # score 범위: 2~9 → confidence 1~5
+        signal_mask = df["signal"].isin([1, 2])
+        confidence = pd.Series(1, index=df.index)
+
+        for idx in df.index[signal_mask]:
+            sig = df.at[idx, "signal"]
+            score = long_score.at[idx] if sig == 1 else short_score.at[idx]
+            # score 2→1, 3→1, 4→2, 5→3, 6→3, 7→4, 8→5, 9→5
+            conf = max(1, min(5, (score - 2)))
+            confidence.at[idx] = conf
+
+        df["confidence"] = confidence.clip(1, 5)
+
+        # ── 포지션 / 수익률 ───────────────────────────────────
+        df["position"] = df["signal"].apply(lambda s: 1 if s in (1, 2) else 0)
+        df["entry_price"] = np.where(
+            df["signal"] == 1, df["target_long"],
+            np.where(df["signal"] == 2, df["target_short"], np.nan),
+        )
+        df["exit_price"] = df["open"].shift(-1)
+        long_ret = (df["exit_price"] - df["target_long"]) / df["target_long"]
+        short_ret = (df["target_short"] - df["exit_price"]) / df["target_short"]
+        df["strategy_return"] = np.where(
+            df["signal"] == 1, long_ret,
+            np.where(df["signal"] == 2, short_ret, 0.0),
+        )
+
+        return df.dropna(subset=["prev_range"])
