@@ -28,6 +28,7 @@ from data.data_collector import fetch_ohlcv
 from strategies import VolatilityBreakoutStrategy
 from strategies.tf_coordinator import TimeframeCoordinator, get_cached_ohlcv, TIER_INTERVAL
 from strategies.mean_reversion import MeanReversionStrategy
+from strategies.entry_engine import EntryEngine
 from engine.upbit_exchange import UpbitExchange
 from engine.bithumb_exchange import BithumbExchange
 from engine.okx_exchange import OKXExchange
@@ -37,6 +38,8 @@ from engine.capital_allocator import CapitalAllocator
 from monitor.telegram_bot import TelegramNotifier
 from macro.indicators import calc_macro_signal
 from macro.fetchers import fetch_fear_greed, fetch_btc_dominance, fetch_market_caps
+from analysis.performance_analyzer import run_daily_report
+from optimization.param_optimizer import run_weekly_optimization
 
 # ── 로그 설정 ──────────────────────────────────────────
 LOG_FILE = ROOT / "logs" / "trades.log"
@@ -202,10 +205,17 @@ notifier = TelegramNotifier()
 tf_coordinator = TimeframeCoordinator(config)
 pos_manager = PositionManager()
 cap_allocator = CapitalAllocator(config)
+entry_engine = EntryEngine(config)
 _TIER_MARKETS = config.get("tier_markets", {})
 _RISK_TIERS = config.get("risk_tiers", {})
 _CONFLUENCE_CFG = config.get("confluence", {})
 _TF_LOCK = threading.Lock()
+
+# 7TF interval 매핑 확장
+TIER_INTERVAL.update({
+    "5m": "minute5",
+    "30m": "minute30",
+})
 
 def get_tier_markets(ex_name: str, tier: str) -> list:
     """Tier별 거래 종목 반환."""
@@ -371,7 +381,10 @@ def run_strategy():
         if ex_name == "okx" and hasattr(ex, "fetch_ohlcv"):
             ohlcv_cache = {}
             for market in ex_mkts:
-                df = ex.fetch_ohlcv(market, interval="day", count=210)
+                if ex_name == "okx" and hasattr(ex, "fetch_ohlcv"):
+                    df = ex.fetch_ohlcv(market, interval="day", count=210)
+                else:
+                    df = fetch_ohlcv(market, interval="day", count=210)
                 if df is not None and not df.empty:
                     ohlcv_cache[market] = df
         else:
@@ -820,6 +833,7 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None
     latest     = signal_df.iloc[-1]
     signal     = latest.get("signal", 0)
     confidence = int(latest.get("confidence", 1))
+    rsi_val    = float(latest.get("rsi", 50) or 50)
 
     # ── 단타 신호반전 청산 ────────────────────────────
     # 보유 중 반대 신호가 나오면 즉시 청산 (기회비용 최소화)
@@ -843,9 +857,27 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None
     daily_ma200     = df_1d["close"].rolling(200).mean().iloc[-1]
     daily_uptrend   = price > daily_ma200
     daily_downtrend = price < daily_ma200
-    if abs(price - daily_ma200) / daily_ma200 < 0.02:
-        logger.info(f"[{ex_name}][{market}] 단타 스킵: MA200 횡보 구간")
+    if abs(price - daily_ma200) / daily_ma200 < 0.003:
+        logger.info(f"[{ex_name}][{market}] 단타 스킵: MA200 극횡보 구간(0.3% 이내)")
         return
+
+    # ── RSI 반등/되돌림 보조 신호 (VB signal=0일 때 보완) ────────
+    rsi_signal = False  # RSI 기반 신호 여부 (롱 진입 추세 게이트 면제용)
+    if signal == 0:
+        RSI_LONG_THRESH  = SC_CFG.get("rsi_oversold_long",  28)
+        RSI_SHORT_THRESH = SC_CFG.get("rsi_overbought_short", 68)
+        prev_close = df_1h["close"].iloc[-2] if len(df_1h) >= 2 else price
+        bullish_candle = price > prev_close
+        if rsi_val < RSI_LONG_THRESH and bullish_candle:
+            signal     = 1
+            confidence = 2
+            rsi_signal = True
+            logger.info(f"[{ex_name}][{market}] RSI반등롱신호: RSI={rsi_val:.1f} < {RSI_LONG_THRESH} + 양봉")
+        elif rsi_val > RSI_SHORT_THRESH and daily_downtrend:
+            signal     = 2
+            confidence = 2
+            rsi_signal = True
+            logger.info(f"[{ex_name}][{market}] RSI되돌림숏신호: RSI={rsi_val:.1f} > {RSI_SHORT_THRESH} + 하락추세")
 
     # Top Trader 혼합 신호 조회 및 확신도 보정
     direction   = "long" if signal == 1 else "short" if signal == 2 else "neutral"
@@ -892,8 +924,8 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None
     if alloc > 0 and invest == 0.0:
         logger.warning(f"[RiskManager] 투자 가능 금액 부족 (최소 {rm.min_order_amount:.0f}) | {market}: {alloc:.2f} USDT")
 
-    # ── 단타 롱 진입 (선물, 상승장 전용) ─────────────
-    if signal == 1 and daily_uptrend and not lp["held"]:
+    # ── 단타 롱 진입 (VB: 상승장 전용 / RSI반등: 추세 무관) ───
+    if signal == 1 and (daily_uptrend or rsi_signal) and not lp["held"]:
         # 스윙 숏이 열려 있으면 선물 롱 불가 (포지션 충돌)
         if short_positions[ex_name][market]["held"]:
             logger.info(f"[{ex_name}][{market}] 단타 롱 스킵 — 스윙 숏 보유 중")
@@ -906,8 +938,8 @@ def _process_scalp(ex_name: str, market: str, df_1h, df_1d, equity: float = None
                 notifier.notify_buy(f"{ex_name}/{market} 단타롱 {leverage}x", price, invest, currency="USDT")
                 logger.info(f"[{ex_name}][{market}] 단타 롱 진입 | {invest:,.2f} USDT | {leverage}x (확신도 {confidence}/5)")
 
-    # ── 단타 숏 진입 (선물, 하락장 전용 + 스윙숏 미보유) ──
-    elif signal == 2 and daily_downtrend and not sp["held"]:
+    # ── 단타 숏 진입 (선물, 방향 무관 — 숏 신호만으로 진입) ──
+    elif signal == 2 and not sp["held"]:
         if short_positions[ex_name][market]["held"]:
             logger.info(f"[{ex_name}][{market}] 단타 숏 스킵 — 스윙 숏 보유 중")
             return
@@ -1042,7 +1074,10 @@ def _scan_entry_status(fgi_val) -> dict:  # fgi_val: Optional[int]
                 price = ex.get_current_price(market)
                 if not price:
                     continue
-                df = ex.fetch_ohlcv(market, interval="day", count=210)
+                if ex_name == "okx" and hasattr(ex, "fetch_ohlcv"):
+                    df = ex.fetch_ohlcv(market, interval="day", count=210)
+                else:
+                    df = fetch_ohlcv(market, interval="day", count=210)
                 if df is None or len(df) < 200:
                     continue
                 sig_df = strat.generate_signals(df)
@@ -1102,6 +1137,98 @@ def _scan_entry_status(fgi_val) -> dict:  # fgi_val: Optional[int]
             except Exception as e:
                 logger.warning(f"[리포트 스캔] {ex_name}/{market}: {e}")
     return result
+
+
+def send_upbit_report():
+    """
+    업비트 진입현황 리포트.
+    - v2 포지션(pos_manager)
+    - 실제 보유 코인 + 평균단가 + 현재 손익
+    - OKX 롱과 동일 조건 (v2 Multi-Timeframe, 롱 전용)
+    매일 09:00 + 사용자 요청 시 호출.
+    """
+    ex = EXCHANGES.get("upbit")
+    if not ex:
+        return
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [f"🏦 <b>업비트 현황</b>  {now_str}"]
+
+    # ── KRW 잔고 ─────────────────────────────────────
+    krw = ex.get_balance_quote()
+    lines.append(f"\nKRW 잔고: {krw:,.0f}원")
+
+    # ── 실제 보유 코인 조회 ───────────────────────────
+    markets = get_markets("upbit")
+    holdings = []
+    total_coin_value = 0.0
+    for market in markets:
+        try:
+            vol = ex.get_balance_coin(market)
+            if vol <= 0:
+                continue
+            avg   = ex.get_avg_buy_price(market)
+            curr  = ex.get_current_price(market) or 0
+            if avg and curr:
+                pnl_pct = (curr - avg) / avg * 100
+                value   = vol * curr
+                total_coin_value += value
+                holdings.append({
+                    "market": market, "volume": vol,
+                    "avg": avg, "curr": curr,
+                    "pnl_pct": pnl_pct, "value": value,
+                })
+        except Exception:
+            pass
+
+    if holdings:
+        lines.append("\n보유 코인:")
+        for h in sorted(holdings, key=lambda x: -x["value"]):
+            em = "🟢" if h["pnl_pct"] >= 0 else "🔴"
+            coin = h["market"].replace("KRW-", "")
+            lines.append(
+                f"  {em} {coin:6s} {h['volume']:.4f}개 | "
+                f"평단 {h['avg']:,.0f} | 현재 {h['curr']:,.0f} | "
+                f"{h['pnl_pct']:+.2f}% | {h['value']:,.0f}원"
+            )
+    else:
+        lines.append("\n보유 코인 없음")
+
+    # ── v2 포지션 (pos_manager에 기록된 upbit 포지션) ─
+    v2_upbit = [p for p in pos_manager.all_positions() if p.exchange == "upbit"]
+    if v2_upbit:
+        lines.append("\nv2 진입 포지션:")
+        for pos in v2_upbit:
+            try:
+                curr = ex.get_current_price(pos.market) or 0
+                pnl_pct = (curr - pos.entry_price) / pos.entry_price * 100 if pos.entry_price else 0
+                em = "🟢" if pnl_pct >= 0 else "🔴"
+                sl_str = f"SL {pos.atr_sl:,.0f}" if pos.atr_sl else ""
+                tp_str = f"TP {pos.atr_tp:,.0f}" if pos.atr_tp else ""
+                lines.append(
+                    f"  {em} {pos.market} {pos.tier} | "
+                    f"진입 {pos.entry_price:,.0f} | 현재 {curr:,.0f} | "
+                    f"{pnl_pct:+.2f}% | {pos.holding_hours:.1f}H | {sl_str} {tp_str}"
+                )
+            except Exception:
+                pass
+
+    # ── 총 평가금액 ──────────────────────────────────
+    total = krw + total_coin_value
+    lines.append(f"\n총 평가금액: {total:,.0f}원")
+
+    # ── 진입 대기 종목 (신호 없는 이유) ─────────────
+    waiting = []
+    for market in markets:
+        v2_held = any(p.market == market and p.exchange == "upbit" for p in v2_upbit)
+        coin_held = any(h["market"] == market for h in holdings)
+        if not v2_held and not coin_held:
+            waiting.append(market.replace("KRW-", ""))
+    if waiting:
+        lines.append(f"\n대기 중 종목: {', '.join(waiting)}")
+
+    notifier.send("\n".join(lines))
+    logger.info(f"[업비트리포트] 전송 완료 | 총 {total:,.0f}원")
 
 
 def send_periodic_report():
@@ -1231,8 +1358,32 @@ def send_periodic_report():
     if equity_lines:
         lines.append("\n💰 <b>자산</b>\n" + "\n".join(equity_lines))
 
-    if pos_lines:
-        lines.append(f"\n📊 <b>포지션 ({total_open}개)</b>\n" + "\n".join(pos_lines))
+    # ── v2 포지션 (pos_manager) ────────────────────────
+    v2_lines = []
+    for pos in pos_manager.all_positions():
+        ex = EXCHANGES.get(pos.exchange)
+        if not ex:
+            continue
+        try:
+            curr = ex.get_current_price(pos.market)
+            if curr and pos.entry_price:
+                if pos.direction == "long":
+                    pnl_pct = (curr - pos.entry_price) / pos.entry_price * 100 * pos.leverage
+                else:
+                    pnl_pct = (pos.entry_price - curr) / pos.entry_price * 100 * pos.leverage
+                em = "🟢" if pnl_pct >= 0 else "🔴"
+                held_h = pos.holding_hours
+                v2_lines.append(
+                    f"  {em} [{pos.exchange}] {pos.market} {pos.direction} {pos.tier} "
+                    f"{pnl_pct:+.2f}% {held_h:.1f}H | conf={pos.confluence_score}"
+                )
+                total_open += 1
+        except Exception:
+            pass
+
+    all_pos_lines = pos_lines + v2_lines
+    if all_pos_lines:
+        lines.append(f"\n📊 <b>포지션 ({total_open}개)</b>\n" + "\n".join(all_pos_lines))
     else:
         lines.append("\n📊 <b>포지션</b>  없음 (현금 대기)")
 
@@ -1405,18 +1556,29 @@ def _run_tier(tier: str):
                         )
                         continue
 
+                    # SL 쿨다운 체크 (동일 종목/방향 재진입 방지)
+                    pos_key = f"{ex_name}:{market}:{tier}:{direction}"
+                    if pos_manager.is_in_sl_cooldown(pos_key):
+                        logger.debug(f"[v2][{tier}][{ex_name}][{market}] SL 쿨다운 중, 재진입 차단")
+                        continue
+
                     # 포지션 개시 가능 여부
                     open_list = pos_manager.all_as_dicts()
                     can_open, deny_reason = cap_allocator.can_open_position(
-                        tier, direction, market, open_list
+                        tier, direction, market, open_list, exchange=ex_name
                     )
                     if not can_open:
                         logger.info(f"[v2][{tier}][{ex_name}][{market}] 진입 거부: {deny_reason}")
                         continue
 
                     # 포지션 크기 + 레버리지
-                    weight = ASSET_WEIGHTS.get(market.replace("KRW-", ""), 1.0 / max(len(tier_markets), 1))
-                    min_order = 5000 if is_upbit else 5.0
+                    # OKX 선물: 계약 최소단위 확보를 위해 asset_weight 미적용 (종목별 소분산 금지)
+                    # Upbit 현물: asset_weight 적용 (분할매수 가능)
+                    if is_upbit:
+                        weight = ASSET_WEIGHTS.get(market.replace("KRW-", ""), 1.0 / max(len(tier_markets), 1))
+                    else:
+                        weight = 1.0  # OKX 선물: tier_size_pct × equity 전액
+                    min_order = 5000 if is_upbit else 100.0  # OKX: 최소 100 USDT (계약단위 확보)
                     invest = cap_allocator.calc_position_size(equity, weight, tier, confluence, min_order)
                     if invest <= 0:
                         continue
@@ -1503,10 +1665,42 @@ def _close_position_v2(pos: Position, ex, reason: str = ""):
                 ok = ex.close_long(pos.market, pos.volume)
         else:
             if hasattr(ex, "close_short"):
-                ok = ex.close_short(pos.market, pos.volume)
+                # OKX: 실제 포지션 볼륨으로 청산 (내부 추적 볼륨과 불일치 방지)
+                close_vol = pos.volume
+                if pos.exchange == "okx" and hasattr(ex, "get_futures_position"):
+                    try:
+                        real = ex.get_futures_position(pos.market)
+                        if not real.get("error") and real.get("side") == "short" and real.get("volume", 0) > 0:
+                            close_vol = real["volume"]
+                    except Exception:
+                        pass
+                ok = ex.close_short(pos.market, close_vol)
 
         if ok:
             pos_manager.close(pos.key, reason=reason)
+            # SL 손절 시 재진입 쿨다운 등록
+            if reason.startswith("SL("):
+                pos_manager.record_sl_hit(pos.key, pos.tier)
+            # ── 거래 결과 기록 (성과 분석용) ────────────────────────────
+            try:
+                exit_price = pos.exchange and EXCHANGES.get(pos.exchange)
+                if exit_price:
+                    exit_price = EXCHANGES[pos.exchange].get_current_price(pos.market) or 0.0
+                else:
+                    exit_price = 0.0
+                if exit_price and pos.entry_price:
+                    if pos.direction == "long":
+                        pnl_pct = (exit_price - pos.entry_price) / pos.entry_price * 100 * pos.leverage
+                    else:
+                        pnl_pct = (pos.entry_price - exit_price) / pos.entry_price * 100 * pos.leverage
+                    pnl = getattr(pos, "invest_usdt", pos.volume) * pnl_pct / 100
+                    logger.info(
+                        f"[TRADE] {pos.direction.upper()} {pos.market} tier={pos.tier} | "
+                        f"entry={pos.entry_price} exit={exit_price:.6f} "
+                        f"pnl={pnl:+.4f} pnl_pct={pnl_pct:+.2f}% reason={reason}"
+                    )
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"[v2] 청산 실패 {pos.key}: {e}")
 
@@ -1525,6 +1719,21 @@ def run_price_monitor_v2():
             price = ex.get_current_price(pos.market)
             if price is None or price <= 0:
                 continue
+
+            # Break-even trailing SL: TP 절반 이상 달성 시 진입가로 SL 이동
+            if pos.entry_price and pos.atr_sl and pos.atr_tp:
+                if pos.direction == "long" and pos.atr_sl < pos.entry_price:
+                    half_tp = pos.entry_price + (pos.atr_tp - pos.entry_price) * 0.5
+                    if price >= half_tp:
+                        pos.atr_sl = pos.entry_price
+                        pos_manager._save()
+                        logger.info(f"[v2 Monitor] {pos.market} 롱 Break-even SL 적용 @ {pos.entry_price:,.2f}")
+                elif pos.direction == "short" and pos.atr_sl > pos.entry_price:
+                    half_tp = pos.entry_price - (pos.entry_price - pos.atr_tp) * 0.5
+                    if price <= half_tp:
+                        pos.atr_sl = pos.entry_price
+                        pos_manager._save()
+                        logger.info(f"[v2 Monitor] {pos.market} 숏 Break-even SL 적용 @ {pos.entry_price:,.2f}")
 
             # SL/TP 체크
             if pos.direction == "long":
@@ -1571,14 +1780,192 @@ def run_tf_safe(fn, name):
         logger.error(f"[v2][{name}] 루프 오류: {e}", exc_info=True)
 
 
-# ── 스케줄 (v2: 4-Timeframe) ─────────────────────────
-schedule.every().hour.at(":00").do(run_tf_safe, run_tf_daily, "daily")  # 일봉: 매시 정각
-schedule.every().hour.at(":15").do(run_tf_safe, run_tf_4h, "4h")       # 4H: 매시 15분
-schedule.every(15).minutes.do(run_tf_safe, run_tf_1h, "1h")            # 1H: 매 15분
-schedule.every(3).minutes.do(run_tf_safe, run_tf_15m, "15m")           # 15m: 매 3분
+# ══════════════════════════════════════════════════════════
+# Advanced Entry Engine — 7TF 분석 기반 진입
+# ══════════════════════════════════════════════════════════
+
+def run_advanced_analysis():
+    """
+    Advanced Entry Engine: 모든 OKX 종목에 대해 7TF OHLCV를 수집하고
+    Regime + MTF Alignment + Entry Trigger를 평가하여 진입/관망 판단.
+    """
+    with _TF_LOCK:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        logger.info(f"[ADV] ── Advanced Analysis | {now_str}")
+
+        ex_name = "okx"
+        ex = EXCHANGES.get(ex_name)
+        if ex is None:
+            return
+
+        equity = calc_total_equity(ex_name)
+        if equity <= 0:
+            return
+
+        # 만료 포지션 청산
+        for pos in pos_manager.expired_positions():
+            _close_position_v2(pos, ex, reason=f"보유시간초과({pos.holding_hours:.1f}h)")
+
+        # 분석 대상 종목 (전 Tier 합집합)
+        all_markets = set()
+        for tier_key in ["daily", "4h", "1h", "15m", "5m", "30m"]:
+            all_markets.update(get_tier_markets(ex_name, tier_key))
+
+        for market in all_markets:
+            try:
+                # 7TF OHLCV 수집 (캐시 활용)
+                fetch_fn = ex.fetch_ohlcv if hasattr(ex, "fetch_ohlcv") else fetch_ohlcv
+                ohlcv_dict = {}
+                for tf_name in ["day", "minute240", "minute60", "minute30", "minute15", "minute5"]:
+                    df = get_cached_ohlcv(fetch_fn, ex_name, market, tf_name, count=210)
+                    if df is not None and not df.empty:
+                        ohlcv_dict[tf_name] = df.copy()  # 캐시 원본 보호
+
+                if not ohlcv_dict:
+                    continue
+
+                # Entry Engine 평가
+                decision = entry_engine.evaluate(market, ohlcv_dict)
+
+                if not decision.should_enter:
+                    if decision.reasons and any("MTF" in r for r in decision.reasons):
+                        logger.debug(f"[ADV][{market}] 관망 | {' | '.join(decision.reasons[:2])}")
+                    continue
+
+                direction = decision.direction
+                coin = market.replace("KRW-", "")
+
+                # 이미 같은 종목+방향에 포지션 있으면 스킵
+                if pos_manager.has_any_position(ex_name, market, direction):
+                    continue
+
+                # SL 쿨다운 체크
+                cool_key = f"{ex_name}:{market}:adv:{direction}"
+                if pos_manager.is_in_sl_cooldown(cool_key):
+                    continue
+
+                # 포지션 개시 가능 여부
+                open_list = pos_manager.all_as_dicts()
+                can_open, deny_reason = cap_allocator.can_open_position(
+                    "1h", direction, market, open_list, exchange=ex_name
+                )
+                if not can_open:
+                    continue
+
+                # 포지션 크기 + 레버리지
+                weight = ASSET_WEIGHTS.get(coin, 1.0 / 8)
+                min_order = 5.0
+                invest = cap_allocator.calc_position_size(
+                    equity, weight, "1h", decision.confidence, min_order
+                )
+                invest *= decision.size_mult
+                if invest < min_order:
+                    continue
+
+                leverage = cap_allocator.calc_leverage("1h", decision.confidence, tier_max_lev=5)
+
+                # 현재가 + ATR SL/TP
+                price = ex.get_current_price(market) or 0
+                if price <= 0:
+                    continue
+
+                atr_val = 0
+                df_entry = ohlcv_dict.get("minute15") if ohlcv_dict.get("minute15") is not None else ohlcv_dict.get("minute60")
+                if df_entry is not None and "atr" in df_entry.columns:
+                    atr_val = float(df_entry["atr"].iloc[-1] or 0)
+
+                if atr_val > 0:
+                    if direction == "long":
+                        sl_price = price - atr_val * decision.sl_mult
+                        tp_price = price + atr_val * decision.tp_mult
+                    else:
+                        sl_price = price + atr_val * decision.sl_mult
+                        tp_price = price - atr_val * decision.tp_mult
+                else:
+                    sl_price, tp_price = None, None
+
+                # 보유시간
+                tier_params = _RISK_TIERS.get("1h", {})
+                max_hold_sec = tier_params.get("max_holding_hours", 12) * 3600
+
+                # 주문 실행
+                order_ok = False
+                volume = invest / price if price > 0 else 0
+
+                if direction == "long":
+                    ex.set_leverage(market, leverage)
+                    order_ok = ex.open_long(market, invest, leverage=leverage)
+                else:
+                    ex.set_leverage(market, leverage)
+                    order_ok = ex.open_short(market, invest, leverage=leverage)
+
+                if order_ok:
+                    pos = Position(
+                        tier="adv",
+                        exchange=ex_name,
+                        market=market,
+                        direction=direction,
+                        entry_price=price,
+                        volume=volume,
+                        leverage=leverage,
+                        atr_sl=sl_price,
+                        atr_tp=tp_price,
+                        confluence_score=decision.confidence,
+                        max_holding_seconds=max_hold_sec,
+                    )
+                    pos_manager.open(pos)
+                    logger.info(
+                        f"[ADV][{market}] {'롱' if direction == 'long' else '숏'} 진입 | "
+                        f"regime={decision.regime} align={decision.alignment:+.1f} "
+                        f"conf={decision.confidence} lev={leverage}x "
+                        f"size=${invest:.0f} @ {price:,.2f} | "
+                        f"trigger={decision.trigger_reason} | "
+                        f"SL={sl_price or '-'} TP={tp_price or '-'}"
+                    )
+
+            except Exception as e:
+                logger.error(f"[ADV][{market}] 처리 오류: {e}", exc_info=True)
+
+        time.sleep(0.1)
+
+
+def run_advanced_safe():
+    run_tf_safe(run_advanced_analysis, "ADV")
+
+
+# ── 스케줄 (v3: 7-Timeframe Advanced) ────────────────
+schedule.every(3).minutes.do(run_advanced_safe)                         # Advanced: 매 3분
 schedule.every().minute.do(run_price_monitor_v2)                        # SL/TP: 매분
 schedule.every().day.at("23:00").do(send_daily_report)
 schedule.every(10).minutes.do(send_periodic_report)
+
+# ── 자동 성과 분석 + 파라미터 최적화 ────────────────────
+def run_perf_analysis():
+    """매일 03:00 — 최근 7일 성과 분석 + tier_size_pct 자동 조정."""
+    try:
+        summary = run_daily_report(days=7, update_config=True)
+        notifier = globals().get("notifier")
+        if notifier:
+            notifier.send(f"[자동분석]\n{summary}")
+        logger.info("[자동분석] 성과 분석 완료")
+    except Exception as e:
+        logger.error(f"[자동분석] 실패: {e}")
+
+def run_param_opt():
+    """매주 일요일 04:00 — 백테스트 기반 파라미터 재최적화."""
+    try:
+        okx_markets = get_markets("okx")
+        summary = run_weekly_optimization(markets=okx_markets[:3])
+        notifier = globals().get("notifier")
+        if notifier:
+            notifier.send(f"[자동최적화]\n{summary}")
+        logger.info("[자동최적화] 파라미터 최적화 완료")
+    except Exception as e:
+        logger.error(f"[자동최적화] 실패: {e}")
+
+schedule.every().day.at("03:00").do(run_perf_analysis)      # 일일 성과 분석
+schedule.every().sunday.at("04:00").do(run_param_opt)       # 주간 파라미터 최적화
+schedule.every().day.at("09:00").do(send_upbit_report)      # 업비트 진입현황 (매일 9시)
 
 
 def main():
@@ -1587,21 +1974,20 @@ def main():
         for n, e in EXCHANGES.items()
     )
     logger.info("=" * 60)
-    logger.info(f"  퀀트 자동매매 봇 v2 시작 (Multi-Timeframe)")
+    logger.info(f"  퀀트 자동매매 봇 v3 시작 (Advanced 7TF Analysis)")
     logger.info(f"  거래소: {ex_list}")
-    logger.info(f"  Tier Daily : 매시 :00 | VB k=0.40 | 최대 lev 3x")
-    logger.info(f"  Tier 4H    : 매시 :15 | VB k=0.35 | 최대 lev 3x")
-    logger.info(f"  Tier 1H    : 매 15분  | VB k=0.25 | 최대 lev 5x")
-    logger.info(f"  Tier 15m   : 매 3분   | MR        | 최대 lev 3x")
-    logger.info(f"  Confluence 최소 점수: {_CONFLUENCE_CFG.get('min_score', 3)}")
+    logger.info(f"  3-Layer Engine: Regime → MTF Alignment → Precision Entry")
+    logger.info(f"  7TF: 1D / 4H / 1H / 30m / 15m / 5m (+ 1m monitor)")
+    logger.info(f"  Advanced Analysis: 매 3분 | SL/TP Monitor: 매분")
+    logger.info(f"  MTF Alignment 임계값: long>={entry_engine.mtf_analyzer.long_threshold} short<={entry_engine.mtf_analyzer.short_threshold}")
     logger.info(f"  최대 동시 포지션: {cap_allocator.max_total_positions}")
     logger.info("=" * 60)
 
     notifier.send(
-        f"🤖 봇 v2 시작 (Multi-TF)\n"
+        f"🤖 봇 v3 시작 (Advanced 7TF)\n"
         f"거래소: {ex_list}\n"
-        f"Tier: Daily/4H/1H/15m\n"
-        f"Confluence min: {_CONFLUENCE_CFG.get('min_score', 3)}"
+        f"Engine: Regime+MTF+Entry\n"
+        f"Analysis: �� 3분 | OKX 전용"
     )
 
     # 포지션 동기화 + 자본배분 초기화
@@ -1610,7 +1996,7 @@ def main():
     refresh_asset_weights()
 
     # 즉시 첫 실행
-    run_tf_safe(run_tf_daily, "daily")
+    run_advanced_safe()
 
     while True:
         schedule.run_pending()

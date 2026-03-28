@@ -1,6 +1,6 @@
 exchanges:
   upbit:
-    enabled: true
+    enabled: false           # OKX 전용 모드 — Upbit 비활성화
     paper_trading: false
     allocation: 0.5          # 전체 자산 중 이 거래소 비중 50%
   bithumb:
@@ -110,7 +110,7 @@ scalp_trading:
   timeframe: minute60            # 1시간봉
   total_capital_ratio: 0.30      # OKX 잔고의 30% = 전체 단타 자본 (종목별 = 30% × 시가총액가중치)
   capital_ratio: 0.075           # 하위 호환용 (total_capital_ratio 없을 때 폴백)
-  k: 0.18                        # 돌파 민감도 ↓ — 진입 빈도 최대화 (기존 0.25)
+  k: 0.08                        # 돌파 민감도 최대화 — 진입 빈도 극대화 (기존 0.18)
   ma_period: 50                  # 50H ≈ 2일 단기 추세
   volume_multiplier: 1.0         # 거래량 필터 완화 — 진입 빈도 확대 (기존 1.2)
   volume_lookback: 20
@@ -118,15 +118,18 @@ scalp_trading:
   vp_bins: 30
   fib_lookback: 30
   # ── 롱 단타 (장투 방향) ────────────────────────────────
-  stop_loss_pct: -0.015          # 롱 손절 -1.5% (여유있게)
-  take_profit_pct: 0.025         # 롱 익절 +2.5% (넉넉하게)
-  max_holding_hours: 12          # 롱 최대 보유 12H (길게 유지)
+  stop_loss_pct: -0.010          # -0.015 → -0.010: 타이트 손절 (빠른 컷)
+  take_profit_pct: 0.015         # 0.025 → 0.015: 빠른 익절 (수익 즉시 실현)
+  max_holding_hours: 4           # 12H → 4H: 자본 재활용 빠르게
   # ── 숏 단타 전용 (단기 빠른 진출, 급등 손절) ────────────
-  short_stop_loss_pct: -0.008    # 숏 손절 -0.8% (타이트: 급등 즉시 손절)
-  short_take_profit_pct: 0.012   # 숏 익절 +1.2% (빠른 이익 실현)
-  short_max_holding_hours: 2     # 숏 최대 보유 2H (단타 원칙)
+  short_stop_loss_pct: -0.006    # -0.008 → -0.006: 더 타이트 (급등 즉시 손절)
+  short_take_profit_pct: 0.010   # 0.012 → 0.010: 더 빠른 익절
+  short_max_holding_hours: 1     # 2H → 1H: 1시간 내 청산
   short_consec: 1                # 숏 진입 연속 하락 봉 수 (1H봉 기준) — use_supertrend시 대체됨
   use_supertrend: true           # Supertrend 방향 필터 (consec_down 대체, 1H 스캘프 숏 정확도↑)
+  # ── RSI 반등/되돌림 보조 신호 (VB signal=0 보완) ─────────────
+  rsi_oversold_long: 28          # RSI 이하 + 양봉 → 반등 롱 단타 신호
+  rsi_overbought_short: 68       # RSI 이상 + 하락추세 → 되돌림 숏 단타 신호
   supertrend_period: 7
   supertrend_multiplier: 3.0
   daily_loss_limit_pct: -0.10   # 단타 일일 손실 한도 -10%
@@ -195,126 +198,127 @@ confluence:
   macro_weight: 1             # 매크로 환경 (FGI, 펀딩비 등)
   top_trader_weight: 1        # Top Trader 정렬
   volume_weight: 1            # 거래량 서지 확인
-  min_score: 3                # 최소 진입 점수 (초기값, 실전 후 조정)
+  min_score: 1                # 최소 진입 점수 완화 — 거래 빈도 최대화
   # confluence → 포지션 크기 배수 (점수: 배수)
   score_to_size:
-    3: 0.50                   # 3-4점: 기본의 50%
-    5: 0.75                   # 5-6점: 기본의 75%
+    1: 0.60                   # 1-2점: 60% (공격적 — 하락장)
+    3: 0.80                   # 3-4점: 80%
+    5: 1.00                   # 5+점: 풀 사이즈
     7: 1.00                   # 7+점: 풀 사이즈
-  # confluence → 레버리지 (점수: 배수)
+  # confluence → 레버리지 (점수: 배수)  하락장 공격적 레버리지
   score_to_leverage:
-    3: 1
-    5: 2
-    7: 3
-    9: 5
+    1: 2                      # 1-2점: 2x
+    3: 3                      # 3-4점: 3x
+    5: 5                      # 5+점: 5x
+    7: 5                      # 7+점: 5x
 
 # ── 자본 배분 (공유 풀 방식) ──────────────────────────────────────────────
 capital_allocation:
   mode: shared_pool            # shared_pool: 전체 자본 공유 + 포지션 수 제한
-  max_total_positions: 8       # 전체 동시 포지션 한도
-  max_per_asset_pct: 0.25      # 종목당 최대 노출 25%
-  max_single_position_pct: 0.15  # 단일 포지션 최대 크기 15%
-  same_direction_limit_pct: 0.80  # 80% 이상 같은 방향이면 추가 차단
+  max_total_positions: 14      # 전체 동시 포지션 한도 확대 (단타 활성화)
+  max_per_asset_pct: 0.30      # 종목당 최대 노출 30%
+  max_single_position_pct: 0.30  # 단일 포지션 최대 크기 30%
+  same_direction_limit_pct: 1.0   # 방향 편중 차단 비활성화 (하락장 숏 집중 허용)
   # Tier별 동시 포지션 상한
   tier_position_limits:
-    daily: 3
-    4h: 3
-    1h: 3
-    15m: 2
+    daily: 5                  # 3 → 5: 하락장 daily 숏 확대
+    4h: 5
+    1h: 5
+    15m: 5
   # 포지션 크기 = equity × asset_weight × tier_size_pct × confluence_mult
   tier_size_pct:
-    daily: 0.15
-    4h: 0.12
-    1h: 0.10
-    15m: 0.08
+    daily: 0.30               # 0.25 → 0.30: SL 타이트해져 실질 위험 동일 → 더 큰 포지션
+    4h: 0.25                  # 0.20 → 0.25
+    1h: 0.25                  # 0.20 → 0.25
+    15m: 0.10                 # 0.08 → 0.10: 단타 포지션 크기 소폭 확대
 
 # ── Tier별 리스크 파라미터 ────────────────────────────────────────────────
 risk_tiers:
   daily:
-    atr_sl_mult: 2.0           # SL = ATR × 2.0
-    atr_tp_mult: 4.0           # TP = ATR × 4.0 (2:1 손익비)
-    atr_period: 14
-    max_leverage: 3
-    max_holding_days: 30
-    daily_loss_limit_pct: -0.15
-  4h:
-    atr_sl_mult: 1.5
-    atr_tp_mult: 3.0           # 2:1 손익비
-    atr_period: 14
-    max_leverage: 3
-    max_holding_days: 7
-    daily_loss_limit_pct: -0.12
-  1h:
-    atr_sl_mult: 1.2
-    atr_tp_mult: 2.4           # 2:1 손익비
+    atr_sl_mult: 1.5           # 2.0 → 1.5: 타이트 손절 (틀리면 빠른 컷)
+    atr_tp_mult: 2.5           # 4.0 → 2.5: 빠른 익절 (수익 즉시 실현)
     atr_period: 14
     max_leverage: 5
-    max_holding_hours: 24
-    daily_loss_limit_pct: -0.10
-  15m:
-    atr_sl_mult: 0.8
-    atr_tp_mult: 1.2           # 1.5:1 손익비 (평균회귀)
+    max_holding_days: 4        # 30 → 4: 자본 재활용 빠르게
+    daily_loss_limit_pct: -0.20
+  4h:
+    atr_sl_mult: 1.2           # 2.0 → 1.2: 더 타이트
+    atr_tp_mult: 2.0           # 4.0 → 2.0: 빠른 익절
     atr_period: 14
+    max_leverage: 5
+    max_holding_days: 2        # 14 → 2: 4h 포지션 이틀 이내 청산
+    daily_loss_limit_pct: -0.15
+  1h:
+    atr_sl_mult: 0.9           # 1.8 → 0.9: 절반으로 타이트
+    atr_tp_mult: 1.5           # 3.6 → 1.5: 빠른 익절
+    atr_period: 14
+    max_leverage: 5
+    max_holding_hours: 12      # 48 → 12: 12시간 내 청산
+    daily_loss_limit_pct: -0.12
+  15m:
+    atr_sl_mult: 0.5           # 0.6 → 0.5: 더 타이트
+    atr_tp_mult: 0.9           # 1.2 → 0.9: 더 빠른 익절
+    atr_period: 7
     max_leverage: 3
-    max_holding_hours: 4
+    max_holding_hours: 1       # 2h → 1h: 1시간 내 청산 원칙
     daily_loss_limit_pct: -0.08
 
 # ── Tier별 전략 파라미터 ──────────────────────────────────────────────────
 timeframe_strategies:
   daily:
-    type: vb                   # volatility_breakout
-    k: 0.40
+    type: vb
+    k: 0.08                    # 0.15 → 0.08: 돌파 민감도 대폭 완화 (신호 증가)
     ma_period: 200
-    volume_multiplier: 1.5
+    volume_multiplier: 1.0
     volume_lookback: 20
     vp_lookback: 20
     vp_bins: 50
     fib_lookback: 50
     use_supertrend: true
     supertrend_period: 7
-    supertrend_multiplier: 3.0
+    supertrend_multiplier: 2.0  # 3.0 → 2.0: Supertrend 더 민감하게 (하락 빠른 감지)
     use_macd_filter: false
     use_rsi_divergence: true
     use_bb_squeeze: false
   4h:
     type: vb
-    k: 0.35
+    k: 0.06                    # 0.12 → 0.06: 돌파 기준 대폭 완화
     ma_period: 200
-    volume_multiplier: 1.3
+    volume_multiplier: 1.0
     volume_lookback: 20
     vp_lookback: 20
     vp_bins: 40
     fib_lookback: 40
     use_supertrend: true
     supertrend_period: 7
-    supertrend_multiplier: 3.0
+    supertrend_multiplier: 2.0  # 3.0 → 2.0: 민감도 증가
     use_macd_filter: false
     use_rsi_divergence: true
     use_bb_squeeze: false
   1h:
     type: vb
-    k: 0.25
+    k: 0.04                    # 0.08 → 0.04: 1h 돌파 최대 완화
     ma_period: 50
-    volume_multiplier: 1.2
+    volume_multiplier: 1.0
     volume_lookback: 20
     vp_lookback: 20
     vp_bins: 30
     fib_lookback: 30
     use_supertrend: true
     supertrend_period: 7
-    supertrend_multiplier: 3.0
+    supertrend_multiplier: 2.0  # 3.0 → 2.0: 민감도 증가
     use_macd_filter: false
     use_rsi_divergence: true
     use_bb_squeeze: true
   15m:
     type: mr                   # mean_reversion
-    rsi_oversold: 25
-    rsi_overbought: 75
-    bb_period: 20
-    bb_std: 2.0
-    vp_lookback: 40            # 40 × 15m = 10시간
-    vp_bins: 30
-    atr_period: 14
+    rsi_oversold: 43           # 32→38→43: 더 완화 (더 많은 반등 신호)
+    rsi_overbought: 57         # 68→62→57: 더 완화 (더 많은 하락 신호)
+    bb_period: 14              # 20 → 14: 단기 밴드
+    bb_std: 1.5                # 2.0→1.8→1.5: 밴드 더 좁혀 신호 대폭 증가
+    vp_lookback: 20            # 40 → 20: 최근 5시간 집중
+    vp_bins: 20
+    atr_period: 7              # 14 → 7: 단기 ATR
 
 # ── Tier별 거래 종목 (미지정 시 exchange_markets 기본값 사용) ─────────────
 tier_markets:
@@ -322,7 +326,48 @@ tier_markets:
     daily: [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
     4h:    [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
     1h:    [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
-    15m:   [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-BNB]   # 유동성 Top 5
+    15m:   [KRW-XRP, KRW-DOGE, KRW-SOL, KRW-ETH, KRW-BNB, KRW-LINK, KRW-SUI]  # 단타 7종목 (XRP/DOGE 소액계약 우선)
+    5m:    [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-DOGE]                  # 정밀 진입 5종목
+    30m:   [KRW-BTC, KRW-ETH, KRW-BNB, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-SUI]
+  upbit:
+    daily: []
+    4h: []
+    1h: []
+    15m: []
+
+# ── Advanced MTF Analysis (7TF) ─────────────────────────────────────────
+mtf_analysis:
+  timeframes: [day, minute240, minute60, minute30, minute15, minute5]
+  tf_weights:
+    day: 3.0
+    minute240: 2.5
+    minute60: 2.0
+    minute30: 1.5
+    minute15: 1.0
+    minute5: 0.5
+  alignment_threshold:
+    long: 3.0                  # 10점 중 3 이상이면 롱 허용
+    short: -3.0                # -3 이하면 숏 허용
+
+# ── Regime Detection ─────────────────────────────────────────────────────
+regime:
+  adx_trending: 25
+  adx_ranging: 20
+  atr_volatile_pctl: 0.80
+  vol_spike_mult: 3.0
+  size_mult:
+    trending: 1.0
+    ranging: 0.7
+    volatile: 0.5
+  sl_tp_mult:
+    trending: {sl: 1.5, tp: 3.0}
+    ranging: {sl: 0.8, tp: 1.2}
+    volatile: {sl: 2.0, tp: 2.0}
+
+# ── Reversal / Dead Cat Bounce Detection ─────────────────────────────────
+reversal_detection:
+  min_conditions: 3            # Bear→Bull 전환: 5개 중 3개 충족
+  dead_cat_bounce_conditions: 3  # 가짜 반등: 4개 중 3개 해당
   upbit:
     daily: [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-AVAX, KRW-SUI]
     4h:    [KRW-BTC, KRW-ETH, KRW-SOL, KRW-XRP, KRW-DOGE, KRW-LINK, KRW-AVAX, KRW-SUI]

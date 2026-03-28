@@ -567,3 +567,69 @@ def calc_ema_stack(df: pd.DataFrame) -> dict:
         and ema21.iloc[-1] < ema21.iloc[-3]
     )
     return {"bullish": bullish, "bearish": bearish}
+
+
+# ── ADX (Average Directional Index) ──────────────────────────────────────
+
+def calc_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """
+    ADX 추세 강도 지표 계산.
+    ADX > 25 = 추세 존재, ADX < 20 = 횡보.
+
+    Returns: df with columns [adx, plus_di, minus_di]
+    """
+    df = df.copy()
+    high, low, close = df["high"], df["low"], df["close"]
+
+    # +DM / -DM
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+    # True Range
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # Smoothed (Wilder's method)
+    atr = tr.ewm(alpha=1 / period, min_periods=period).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1 / period, min_periods=period).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1 / period, min_periods=period).mean() / atr)
+
+    # DX → ADX
+    dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-10) * 100
+    adx = dx.ewm(alpha=1 / period, min_periods=period).mean()
+
+    df["adx"] = adx
+    df["plus_di"] = plus_di
+    df["minus_di"] = minus_di
+    return df
+
+
+def calc_atr_percentile(df: pd.DataFrame, atr_period: int = 14, lookback: int = 100) -> float:
+    """
+    현재 ATR의 과거 lookback 기간 대비 백분위 (0.0~1.0).
+    0.8 이상 = 극단적 변동성 (VOLATILE regime).
+    """
+    if "atr" not in df.columns:
+        df = calc_atr(df, atr_period)
+    atr_series = df["atr"].dropna().tail(lookback)
+    if len(atr_series) < 10:
+        return 0.5
+    current = atr_series.iloc[-1]
+    return float((atr_series < current).sum() / len(atr_series))
+
+
+# ── RSI 계산 ─────────────────────────────────────────────────────────────
+
+def calc_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """RSI (Relative Strength Index) 계산. df에 'rsi' 컬럼 추가."""
+    df = df.copy()
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    df["rsi"] = 100 - (100 / (1 + rs))
+    return df
