@@ -1,28 +1,20 @@
 /**
- * API fetch 래퍼 — 모든 /api/* 호출 담당
+ * API fetch wrapper — OKX-focused dashboard v2
  */
+const B = '';
 
-const BASE = '';  // same origin
-
-async function apiFetch(path) {
-  const res = await fetch(BASE + path);
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${path}`);
-  return res.json();
+async function f(p) {
+  const r = await fetch(B + p);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
 }
 
 export const api = {
-  health:       ()                              => apiFetch('/api/health'),
-  portfolio:    ()                              => apiFetch('/api/portfolio'),
-  risk:         ()                              => apiFetch('/api/risk'),
-  signals:      ()                              => apiFetch('/api/signals'),
-  trades:       (limit=50, exchange='', market='') => {
-    const params = new URLSearchParams({ limit });
-    if (exchange) params.set('exchange', exchange);
-    if (market)   params.set('market',   market);
-    return apiFetch(`/api/trades?${params}`);
-  },
-  candles:      (exchange, market, interval='day', count=200) =>
-    apiFetch(`/api/candles/${exchange}/${encodeURIComponent(market)}?interval=${interval}&count=${count}`),
-  equityHistory: (exchange) => apiFetch(`/api/equity-history/${exchange}`),
-  logs:          (lines=200) => apiFetch(`/api/logs?lines=${lines}`),
+  positions:  ()           => f('/api/positions'),
+  health:     ()           => f('/api/health'),
+  portfolio:  ()           => f('/api/portfolio'),
+  trades:     (n = 20)     => f(`/api/trades?limit=${n}`),
+  equity:     (ex = 'okx') => f(`/api/equity-history/${ex}`),
+  candles:    (m, i = 'day', c = 200) => f(`/api/candles/okx/${m}?interval=${i}&count=${c}`),
+  logs:       (n = 200)    => f(`/api/logs?lines=${n}`),
 };

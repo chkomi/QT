@@ -141,6 +141,125 @@ async def signals(request: Request):
         return JSONResponse({"error": str(e)}, status_code=503)
 
 
+@app.get("/api/positions")
+async def positions(request: Request):
+    """v2 PositionManager 기반 오픈 포지션 + OKX 총자산 + 일일 PnL."""
+    import json, time
+
+    pos_file = ROOT / "data" / "positions.json"
+    result = {
+        "total_equity_usdt": 0,
+        "daily_pnl_usdt": 0,
+        "daily_pnl_pct": 0,
+        "open_count": 0,
+        "max_positions": 14,
+        "upbit_equity_krw": 0,
+        "positions": [],
+    }
+
+    # OKX 총자산 조회
+    agg = getattr(request.app.state, "aggregator", None)
+    if agg:
+        try:
+            okx_ex = agg._exchanges.get("okx")
+            upbit_ex = agg._exchanges.get("upbit")
+            if okx_ex:
+                result["total_equity_usdt"] = okx_ex.get_balance_quote()
+            if upbit_ex:
+                result["upbit_equity_krw"] = upbit_ex.get_balance_quote()
+        except Exception as e:
+            logger.warning(f"잔고 조회 실패: {e}")
+
+    # positions.json 읽기
+    if not pos_file.exists():
+        return result
+
+    try:
+        raw = json.loads(pos_file.read_text(encoding="utf-8"))
+    except Exception:
+        return result
+
+    now = time.time()
+    pos_list = []
+
+    for key, p in raw.items():
+        entry = float(p.get("entry_price", 0))
+        direction = p.get("direction", "long")
+        market = p.get("market", "")
+
+        # 현재가 조회
+        current = 0
+        if agg:
+            try:
+                okx_ex = agg._exchanges.get(p.get("exchange", "okx"))
+                if okx_ex:
+                    current = okx_ex.get_current_price(market) or 0
+            except Exception:
+                pass
+
+        # PnL 계산
+        volume = float(p.get("volume", 0))
+        leverage = int(p.get("leverage", 1))
+        if entry > 0 and current > 0:
+            if direction == "long":
+                pnl_pct = (current - entry) / entry * 100
+                pnl_usdt = (current - entry) * volume * leverage
+            else:
+                pnl_pct = (entry - current) / entry * 100
+                pnl_usdt = (entry - current) * volume * leverage
+        else:
+            pnl_pct = 0
+            pnl_usdt = 0
+
+        # SL-TP 진행 바
+        atr_sl = p.get("atr_sl")
+        atr_tp = p.get("atr_tp")
+        sl_tp_progress = 0.5
+        if atr_sl and atr_tp and current > 0:
+            sl = float(atr_sl)
+            tp = float(atr_tp)
+            rng = abs(tp - sl)
+            if rng > 0:
+                if direction == "long":
+                    sl_tp_progress = max(0, min(1, (current - sl) / rng))
+                else:
+                    sl_tp_progress = max(0, min(1, (sl - current) / rng))
+
+        # 보유시간
+        entry_time = float(p.get("entry_time", 0))
+        holding_hours = (now - entry_time) / 3600 if entry_time > 0 else 0
+        max_hold_sec = float(p.get("max_holding_seconds", 0))
+        max_holding_hours = max_hold_sec / 3600 if max_hold_sec > 0 else 0
+
+        # 투자금 추정
+        invest = entry * volume if entry > 0 else 0
+
+        pos_list.append({
+            "key": key,
+            "tier": p.get("tier", "daily"),
+            "exchange": p.get("exchange", "okx"),
+            "market": market,
+            "direction": direction,
+            "leverage": leverage,
+            "confluence_score": int(p.get("confluence_score", 0)),
+            "entry_price": round(entry, 6),
+            "current_price": round(current, 6),
+            "volume": volume,
+            "invest_usdt": round(invest, 2),
+            "unrealized_pnl_usdt": round(pnl_usdt, 2),
+            "unrealized_pnl_pct": round(pnl_pct, 2),
+            "atr_sl": float(atr_sl) if atr_sl else None,
+            "atr_tp": float(atr_tp) if atr_tp else None,
+            "sl_tp_progress": round(sl_tp_progress, 3),
+            "holding_hours": round(holding_hours, 1),
+            "max_holding_hours": round(max_holding_hours, 1),
+        })
+
+    result["positions"] = pos_list
+    result["open_count"] = len(pos_list)
+    return result
+
+
 @app.get("/api/equity-history/{exchange}")
 async def equity_history(request: Request, exchange: str):
     parser = getattr(request.app.state, "parser", None)
