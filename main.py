@@ -1654,6 +1654,29 @@ def _run_tier(tier: str):
         time.sleep(0.1)  # API 호출 간격
 
 
+_TRADE_HISTORY_FILE = ROOT / "data" / "trade_history.json"
+
+def _record_trade(trade: dict):
+    """거래 내역을 trade_history.json에 영구 기록."""
+    import json
+    trades = []
+    if _TRADE_HISTORY_FILE.exists():
+        try:
+            trades = json.loads(_TRADE_HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            trades = []
+    trades.append(trade)
+    # 최근 500건만 유지
+    if len(trades) > 500:
+        trades = trades[-500:]
+    try:
+        _TRADE_HISTORY_FILE.write_text(
+            json.dumps(trades, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.warning(f"trade_history 저장 실패: {e}")
+
+
 def _close_position_v2(pos: Position, ex, reason: str = ""):
     """v2 포지션 청산."""
     try:
@@ -1681,26 +1704,56 @@ def _close_position_v2(pos: Position, ex, reason: str = ""):
             # SL 손절 시 재진입 쿨다운 등록
             if reason.startswith("SL("):
                 pos_manager.record_sl_hit(pos.key, pos.tier)
-            # ── 거래 결과 기록 (성과 분석용) ────────────────────────────
+            # ── 거래 결과 기록 ────────────────────────────────────────
             try:
-                exit_price = pos.exchange and EXCHANGES.get(pos.exchange)
-                if exit_price:
-                    exit_price = EXCHANGES[pos.exchange].get_current_price(pos.market) or 0.0
-                else:
-                    exit_price = 0.0
-                if exit_price and pos.entry_price:
+                exit_price = 0.0
+                ex_obj = EXCHANGES.get(pos.exchange)
+                if ex_obj:
+                    exit_price = ex_obj.get_current_price(pos.market) or 0.0
+
+                pnl_pct = 0.0
+                pnl_usdt = 0.0
+                invest = pos.entry_price * pos.volume if pos.entry_price > 0 else 0
+
+                if exit_price > 0 and pos.entry_price > 0:
                     if pos.direction == "long":
-                        pnl_pct = (exit_price - pos.entry_price) / pos.entry_price * 100 * pos.leverage
+                        pnl_pct = (exit_price - pos.entry_price) / pos.entry_price * 100
                     else:
-                        pnl_pct = (pos.entry_price - exit_price) / pos.entry_price * 100 * pos.leverage
-                    pnl = getattr(pos, "invest_usdt", pos.volume) * pnl_pct / 100
-                    logger.info(
-                        f"[TRADE] {pos.direction.upper()} {pos.market} tier={pos.tier} | "
-                        f"entry={pos.entry_price} exit={exit_price:.6f} "
-                        f"pnl={pnl:+.4f} pnl_pct={pnl_pct:+.2f}% reason={reason}"
-                    )
-            except Exception:
-                pass
+                        pnl_pct = (pos.entry_price - exit_price) / pos.entry_price * 100
+                    pnl_usdt = invest * pos.leverage * pnl_pct / 100
+
+                holding_h = pos.holding_hours
+
+                # 로그 출력
+                logger.info(
+                    f"[TRADE] {pos.direction.upper()} {pos.market} tier={pos.tier} | "
+                    f"entry={pos.entry_price:.6f} exit={exit_price:.6f} "
+                    f"pnl={pnl_usdt:+.2f}$ pnl_pct={pnl_pct:+.2f}% "
+                    f"lev={pos.leverage}x hold={holding_h:.1f}h reason={reason}"
+                )
+
+                # trade_history.json에 영구 기록
+                _record_trade({
+                    "close_time": datetime.now().isoformat(),
+                    "close_ts": time.time(),
+                    "exchange": pos.exchange,
+                    "market": pos.market,
+                    "direction": pos.direction,
+                    "tier": pos.tier,
+                    "leverage": pos.leverage,
+                    "confluence": pos.confluence_score,
+                    "entry_price": round(pos.entry_price, 6),
+                    "exit_price": round(exit_price, 6),
+                    "volume": pos.volume,
+                    "invest_usdt": round(invest, 2),
+                    "pnl_usdt": round(pnl_usdt, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "holding_hours": round(holding_h, 2),
+                    "reason": reason,
+                    "entry_time": datetime.fromtimestamp(pos.entry_time).isoformat() if pos.entry_time else "",
+                })
+            except Exception as e:
+                logger.warning(f"[TRADE] 기록 실패: {e}")
     except Exception as e:
         logger.error(f"[v2] 청산 실패 {pos.key}: {e}")
 

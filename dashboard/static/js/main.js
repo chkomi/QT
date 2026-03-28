@@ -163,34 +163,63 @@ async function refreshEquity() {
   }
 }
 
-// ── Trades ────────────────────────────────────────────
+// ── Trades (trade_history.json 기반) ──────────────────
 async function refreshTrades() {
   try {
-    const limit = _tradesExpanded ? 50 : 10;
-    const { trades } = await api.trades(limit);
+    const limit = _tradesExpanded ? 50 : 15;
+    const data = await api.tradeHistory(limit);
     const el = document.getElementById('trades-list');
+    const header = document.querySelector('#sec-trades h2');
 
-    if (!trades || trades.length === 0) {
-      el.innerHTML = '<div class="empty">No trades yet</div>';
+    // 요약 배지
+    if (data.total > 0) {
+      const wr = data.win_rate || 0;
+      const totalPnl = data.total_pnl_usdt || 0;
+      const pnlCls = totalPnl >= 0 ? 'profit' : 'loss';
+      const pnlSign = totalPnl >= 0 ? '+' : '';
+      header.innerHTML = `Trades <span class="badge">${data.total}</span> ` +
+        `<span class="trade-summary ${pnlCls}">${pnlSign}$${Math.abs(totalPnl).toFixed(2)}</span> ` +
+        `<span class="trade-summary">WR ${wr}%</span> ` +
+        `<button id="btn-more" class="btn-text">${_tradesExpanded ? 'less' : 'more'}</button>`;
+      document.getElementById('btn-more').addEventListener('click', () => {
+        _tradesExpanded = !_tradesExpanded;
+        refreshTrades();
+      });
+    }
+
+    if (!data.trades || data.trades.length === 0) {
+      el.innerHTML = '<div class="empty">No closed trades yet</div>';
       return;
     }
 
-    el.innerHTML = trades.map(t => {
-      const pnl = t.pnl_pct != null ? `${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(2)}%` : '';
-      const cls = t.type === 'buy' || t.type === 'long_entry' ? 'trade-buy' :
-                  t.type === 'stop_loss' ? 'trade-sl' :
-                  t.type === 'take_profit' ? 'trade-tp' : 'trade-sell';
+    el.innerHTML = data.trades.map(t => {
+      const pnl = t.pnl_usdt || 0;
+      const pnlPct = t.pnl_pct || 0;
+      const isWin = pnl >= 0;
+      const pnlCls = isWin ? 'profit' : 'loss';
+      const sign = isWin ? '+' : '';
       const coin = (t.market || '').replace('KRW-', '');
-      const time = (t.timestamp || '').slice(5, 16).replace('T', ' ');
-      const tier = t.tier || '';
-      const side = t.side || t.type || '';
+      const dir = t.direction === 'long' ? 'L' : 'S';
+      const dirCls = t.direction === 'long' ? 'dir-long' : 'dir-short';
+      const time = (t.close_time || '').slice(5, 16).replace('T', ' ');
+      const reason = (t.reason || '').replace(/\(.*\)/, '').slice(0, 10);
+      const holdH = t.holding_hours || 0;
 
-      return `<div class="trade-row ${cls}">
-        <span class="t-time">${time}</span>
-        <span class="t-coin">${coin}</span>
-        <span class="t-side">${side}</span>
-        <span class="t-tier">${tier}</span>
-        <span class="t-pnl ${pnl.startsWith('+') ? 'profit' : pnl.startsWith('-') ? 'loss' : ''}">${pnl}</span>
+      return `<div class="trade-card ${isWin ? 'trade-win' : 'trade-loss'}">
+        <div class="tc-top">
+          <span class="tc-coin">${coin}</span>
+          <span class="tc-dir ${dirCls}">${dir}</span>
+          <span class="tc-tier">${t.tier || ''}</span>
+          <span class="tc-lev">${t.leverage || 1}x</span>
+          <span class="tc-pnl ${pnlCls}">${sign}$${Math.abs(pnl).toFixed(2)}</span>
+        </div>
+        <div class="tc-detail">
+          <span>${formatPrice(t.entry_price)} → ${formatPrice(t.exit_price)}</span>
+          <span class="${pnlCls}">${sign}${pnlPct.toFixed(2)}%</span>
+          <span>${holdH.toFixed(1)}h</span>
+          <span class="tc-reason">${reason}</span>
+        </div>
+        <div class="tc-time">${time}</div>
       </div>`;
     }).join('');
   } catch (e) {

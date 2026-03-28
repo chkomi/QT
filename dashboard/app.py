@@ -141,6 +141,35 @@ async def signals(request: Request):
         return JSONResponse({"error": str(e)}, status_code=503)
 
 
+@app.get("/api/trade-history")
+async def trade_history(limit: int = Query(50)):
+    """영구 기록된 거래 내역 (trade_history.json)."""
+    import json
+    hist_file = ROOT / "data" / "trade_history.json"
+    if not hist_file.exists():
+        return {"trades": [], "total": 0, "total_pnl_usdt": 0, "win_count": 0, "loss_count": 0}
+
+    try:
+        trades = json.loads(hist_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {"trades": [], "total": 0, "total_pnl_usdt": 0, "win_count": 0, "loss_count": 0}
+
+    # 최신순
+    trades = list(reversed(trades))
+    total_pnl = sum(t.get("pnl_usdt", 0) for t in trades)
+    wins = sum(1 for t in trades if t.get("pnl_usdt", 0) > 0)
+    losses = sum(1 for t in trades if t.get("pnl_usdt", 0) < 0)
+
+    return {
+        "trades": trades[:limit],
+        "total": len(trades),
+        "total_pnl_usdt": round(total_pnl, 2),
+        "win_count": wins,
+        "loss_count": losses,
+        "win_rate": round(wins / max(wins + losses, 1) * 100, 1),
+    }
+
+
 @app.get("/api/positions")
 async def positions(request: Request):
     """v2 PositionManager 기반 오픈 포지션 + OKX 총자산 + 일일 PnL."""

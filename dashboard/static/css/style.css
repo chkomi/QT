@@ -137,6 +137,39 @@ h2 .badge { font-size: 12px; background: var(--card2); color: var(--text); }
 .trade-sl { background: rgba(248,81,73,0.05); }
 .trade-tp { background: rgba(63,185,80,0.05); }
 
+/* ── Trade Cards ───────────────────────────────── */
+.trade-summary { font-size: 13px; font-weight: 600; margin-left: 4px; }
+.trade-summary.profit { color: var(--green); }
+.trade-summary.loss { color: var(--red); }
+
+.trade-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--muted);
+}
+.trade-win { border-left-color: var(--green); }
+.trade-loss { border-left-color: var(--red); }
+
+.tc-top { display: flex; align-items: center; gap: 6px; }
+.tc-coin { font-weight: 700; font-size: 15px; }
+.tc-dir { font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+.dir-long { background: rgba(63,185,80,0.15); color: var(--green); }
+.dir-short { background: rgba(248,81,73,0.15); color: var(--red); }
+.tc-tier { font-size: 11px; color: var(--blue); }
+.tc-lev { font-size: 11px; color: var(--orange); }
+.tc-pnl { margin-left: auto; font-size: 16px; font-weight: 700; }
+.tc-pnl.profit { color: var(--green); }
+.tc-pnl.loss { color: var(--red); }
+
+.tc-detail { display: flex; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.tc-detail .profit { color: var(--green); }
+.tc-detail .loss { color: var(--red); }
+.tc-reason { color: var(--muted); font-style: italic; }
+
+.tc-time { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
 /* ── Logs ──────────────────────────────────────── */
 .toggle-h { cursor: pointer; user-select: none; }
 .caret { font-size: 10px; }

@@ -10,11 +10,12 @@ async function f(p) {
 }
 
 export const api = {
-  positions:  ()           => f('/api/positions'),
-  health:     ()           => f('/api/health'),
-  portfolio:  ()           => f('/api/portfolio'),
-  trades:     (n = 20)     => f(`/api/trades?limit=${n}`),
-  equity:     (ex = 'okx') => f(`/api/equity-history/${ex}`),
-  candles:    (m, i = 'day', c = 200) => f(`/api/candles/okx/${m}?interval=${i}&count=${c}`),
-  logs:       (n = 200)    => f(`/api/logs?lines=${n}`),
+  positions:    ()           => f('/api/positions'),
+  health:       ()           => f('/api/health'),
+  portfolio:    ()           => f('/api/portfolio'),
+  tradeHistory: (n = 30)    => f(`/api/trade-history?limit=${n}`),
+  trades:       (n = 20)    => f(`/api/trades?limit=${n}`),
+  equity:       (ex = 'okx') => f(`/api/equity-history/${ex}`),
+  candles:      (m, i = 'day', c = 200) => f(`/api/candles/okx/${m}?interval=${i}&count=${c}`),
+  logs:         (n = 200)    => f(`/api/logs?lines=${n}`),
 };
